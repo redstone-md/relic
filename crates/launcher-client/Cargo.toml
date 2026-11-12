@@ -15,7 +15,7 @@ path = "src/main.rs"
 # GPUI is pre-1.0 and gpui-kit pins the GPUI snapshot it was built against,
 # so the kit version is exact and bumped on purpose.
 gpui-kit = "=0.9.1"
-dirs = "6.0.0"
+dirs = "7.0.0"
 hex = "0.4.3"
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
