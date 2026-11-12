@@ -1,0 +1,53 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: dropdown
+    id: part
+    attributes:
+      label: Where
+      options: [Daemon, Admin panel, Launcher, Docker image, Something else]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a Fabric 1.21.1 instance
+        2. Upload a mod
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Relic version
+      placeholder: 0.0.1
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system
+      placeholder: Ubuntu 24.04, Windows 11, macOS 15
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Minecraft version and loader
+      placeholder: 1.21.1, NeoForge
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Daemon output, the launcher log or the game crash report. Remove tokens and addresses first.
+      render: text
