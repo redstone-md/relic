@@ -1,0 +1,19 @@
+[package]
+name = "relic-jar"
+description = "Reads mod metadata out of Fabric, Quilt, Forge and NeoForge jars"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+relic-proto = { version = "0.0.1", path = "../relic-proto" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+toml = "1.2.1"
+zip = { version = "7.3.0", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true
