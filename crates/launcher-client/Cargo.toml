@@ -1,0 +1,48 @@
+[package]
+name = "launcher-client"
+description = "Relic launcher: signs players in, keeps the modpack in sync and starts the game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "relic-launcher"
+path = "src/main.rs"
+
+[dependencies]
+# GPUI is pre-1.0 and gpui-kit pins the GPUI snapshot it was built against,
+# so the kit version is exact and bumped on purpose.
+gpui-kit = "=0.9.1"
+dirs = "6.0.0"
+hex = "0.4.3"
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+relic-mc = { version = "0.0.1", path = "../relic-mc" }
+relic-proto = { version = "0.0.1", path = "../relic-proto" }
+reqwest = { version = "0.13.5", default-features = false, features = ["gzip", "http2", "json", "rustls", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.0"
+sys-locale = "0.3.2"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.44"
+ttf-parser = "0.25.1"
+uuid = { version = "1.26.1", features = ["serde"] }
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config"] }
+futures-util = "0.3.34"
+minisign-verify = "0.3.0"
+self-replace = "1.5.1"
+semver = "1.0.28"
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
+include_dir = "0.7.4"
+
+[dev-dependencies]
+fluent-syntax = "0.12.0"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
