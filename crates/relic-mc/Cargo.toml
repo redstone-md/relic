@@ -1,0 +1,30 @@
+[package]
+name = "relic-mc"
+description = "Installs Minecraft, mod loaders and Java runtimes for Relic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flate2 = "1.1.11"
+futures-util = "0.3.34"
+hex = "0.4.3"
+relic-proto = { version = "0.0.1", path = "../relic-proto" }
+reqwest = { version = "0.13.5", default-features = false, features = ["gzip", "http2", "json", "rustls", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+tar = "0.4.46"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["fs", "io-util", "process", "macros", "rt-multi-thread", "time"] }
+tracing = "0.1.44"
+zip = { version = "7.3.0", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
