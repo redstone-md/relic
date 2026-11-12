@@ -159,10 +159,10 @@ Store the contents of `relic.key` as the repository secret
 `MINISIGN_SECRET_KEY` and the base64 line of `relic.pub` as the repository
 variable `MINISIGN_PUBLIC_KEY`.
 
-To check a download by hand:
+Official releases are signed with this key. To check a download by hand:
 
 ```sh
-minisign -Vm relic-admin-linux-x86_64 -P <public key>
+minisign -Vm relic-admin-linux-x86_64 -P RWSyEgh1DyLAkEkcgwO01yN3QxHzr/zphZZgqIXzyuw7EPdfhHdqWaUX
 ```
 
 ## What you are trusting
