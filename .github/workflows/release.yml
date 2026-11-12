@@ -1,0 +1,127 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds every binary, signs each with minisign and
+# publishes a GitHub release. Launchers in the field update from it.
+#
+# Secrets:
+#   MINISIGN_SECRET_KEY  contents of a key made with `minisign -G -W`
+#                        (no password: nobody is there to type one).
+# Variables:
+#   MINISIGN_PUBLIC_KEY  the matching public key (the base64 line). It is
+#                        compiled into the launcher, which refuses updates
+#                        that key did not sign.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+  build:
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: admin-core, bin: admin-core, os: ubuntu-latest, name: relic-admin-linux-x86_64 }
+          - { package: admin-core, bin: admin-core, os: ubuntu-24.04-arm, name: relic-admin-linux-aarch64 }
+          - { package: admin-core, bin: admin-core.exe, os: windows-latest, name: relic-admin-windows-x86_64.exe }
+          - { package: launcher-client, bin: relic-launcher, os: ubuntu-latest, name: relic-launcher-linux-x86_64 }
+          - { package: launcher-client, bin: relic-launcher.exe, os: windows-latest, name: relic-launcher-windows-x86_64.exe }
+          - { package: launcher-client, bin: relic-launcher, os: macos-latest, name: relic-launcher-macos-aarch64 }
+          - { package: launcher-client, bin: relic-launcher, os: macos-15-intel, name: relic-launcher-macos-x86_64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      RELIC_UPDATE_REPO: ${{ github.repository }}
+      RELIC_UPDATE_PUBLIC_KEY: ${{ vars.MINISIGN_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Linux libraries the launcher links against
+        if: runner.os == 'Linux' && matrix.package == 'launcher-client'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
+            libxcb1-dev libfontconfig-dev libasound2-dev libdbus-1-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.name }}
+      - name: The tag and the crate version agree
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "v$version" = "$GITHUB_REF_NAME" || {
+            echo "tag $GITHUB_REF_NAME does not match Cargo version $version"; exit 1; }
+      - run: cargo build --release --locked -p ${{ matrix.package }}
+      - shell: bash
+        run: |
+          mkdir out
+          cp "target/release/${{ matrix.bin }}" "out/${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: out/${{ matrix.name }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: relic-*
+          path: dist
+          merge-multiple: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          test -n "$MINISIGN_SECRET_KEY" || { echo "MINISIGN_SECRET_KEY is not set"; exit 1; }
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          cd dist
+          for file in relic-*; do
+            minisign -S -s "$key" -m "$file" -t "$file $GITHUB_REF_NAME"
+          done
+          sha256sum relic-* > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp deploy/relic.service dist/
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
