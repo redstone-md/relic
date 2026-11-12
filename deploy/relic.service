@@ -1,0 +1,44 @@
+# systemd unit for the Relic daemon.
+#
+#   useradd --system --home-dir /var/lib/relic --shell /usr/sbin/nologin relic
+#   install -m 755 admin-core /usr/local/bin/admin-core
+#   install -m 644 relic.service /etc/systemd/system/relic.service
+#   systemctl enable --now relic
+#   journalctl -u relic      # the first start prints the setup token here
+#
+# Put a TLS-terminating reverse proxy in front of port 8080 and set
+# RELIC_TRUST_PROXY=1 so rate limits see the players' real addresses.
+
+[Unit]
+Description=Relic Minecraft orchestration daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relic
+Group=relic
+StateDirectory=relic
+WorkingDirectory=/var/lib/relic
+Environment=RELIC_DATA_DIR=/var/lib/relic
+Environment=RELIC_BIND=127.0.0.1:8080
+#Environment=RELIC_TRUST_PROXY=1
+ExecStart=/usr/local/bin/admin-core
+Restart=on-failure
+RestartSec=5
+# Minecraft servers are stopped one by one on the way down.
+TimeoutStopSec=120
+KillSignal=SIGTERM
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/relic
+
+[Install]
+WantedBy=multi-user.target
