@@ -38,7 +38,7 @@ jobs:
         working-directory: web
       - run: pnpm build
         working-directory: web
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: web/dist
@@ -89,7 +89,7 @@ jobs:
         run: |
           mkdir out
           cp "target/release/${{ matrix.bin }}" "out/${{ matrix.name }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: out/${{ matrix.name }}
