@@ -1,7 +1,7 @@
 //! Where mods come from besides manual upload: Modrinth, CurseForge and
 //! modpack archives of either catalogue.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -194,6 +194,37 @@ fn mod_path(filename: &str) -> Result<String> {
     normalize_path(&format!("mods/{name}"))
 }
 
+/// Names of the jars inside an archive, lower-cased, wherever they sit.
+fn jar_names(archive: &Path) -> Result<HashSet<String>> {
+    let zip = zip::ZipArchive::new(fs_err::File::open(archive)?)
+        .map_err(|e| Error::invalid(format!("not a valid server pack: {e}")))?;
+    Ok(zip
+        .file_names()
+        .map(|name| name.replace('\\', "/").to_ascii_lowercase())
+        .filter(|name| name.ends_with(".jar"))
+        .filter_map(|name| name.rsplit('/').next().map(str::to_owned))
+        .collect())
+}
+
+/// A mod the pack's own server build leaves out runs on the client only.
+/// The server build is trusted only when it holds most of the pack's mods;
+/// one made from other files would mark everything as client-only.
+fn client_only_by_server_pack(
+    server_jars: Option<&HashSet<String>>,
+    mod_jars: &[String],
+) -> HashSet<String> {
+    let Some(server_jars) = server_jars else {
+        return HashSet::new();
+    };
+    let (kept, dropped): (Vec<&String>, Vec<&String>) = mod_jars
+        .iter()
+        .partition(|name| server_jars.contains(*name));
+    if kept.len() < dropped.len() {
+        return HashSet::new();
+    }
+    dropped.into_iter().cloned().collect()
+}
+
 fn curseforge_host(url: &str) -> bool {
     https_host(url).is_some_and(|h| h == "forgecdn.net" || h.ends_with(".forgecdn.net"))
 }
@@ -363,6 +394,9 @@ struct CfFile {
     #[serde(default)]
     release_type: u8,
     download_url: Option<String>,
+    /// For a modpack file: the build of the same pack meant for servers.
+    #[serde(default)]
+    server_pack_file_id: Option<u64>,
     #[serde(default)]
     hashes: Vec<CfHash>,
     #[serde(default)]
@@ -1003,11 +1037,66 @@ impl Sources {
             http::download(&self.http, source, &scratch, &curseforge_checksum(chosen))
                 .await
                 .map_err(upstream)?;
-            self.import_pack(&instance.id, &scratch, Some(key)).await
+            let server_jars = match chosen.server_pack_file_id {
+                Some(file) => self.server_pack_jars(project, file, key).await,
+                None => None,
+            };
+            if server_jars.is_none() {
+                tracing::info!(
+                    instance = %instance.id,
+                    pack = %chosen.file_name,
+                    "no server pack to compare with; sides come from each mod's own metadata"
+                );
+            }
+            self.import_pack_with(&instance.id, &scratch, Some(key), server_jars.as_ref())
+                .await
         }
         .await;
         let _ = fs_err::tokio::remove_file(&scratch).await;
         result
+    }
+
+    /// The jars in the server build of a CurseForge modpack. A pack without
+    /// a usable server build is not an error: the import falls back to what
+    /// each mod says about itself.
+    async fn server_pack_jars(
+        &self,
+        project: &str,
+        file: u64,
+        key: &str,
+    ) -> Option<HashSet<String>> {
+        let scratch = self.tmp.join(format!("server-pack-{}.zip", Uuid::new_v4()));
+        let result: Result<HashSet<String>> = async {
+            let url = url(CURSEFORGE, &format!("/mods/{project}/files/{file}"), &[])?;
+            let found: CfEnvelope<CfFile> = self.fetch(url, Some(key)).await?;
+            let source = found.data.download_url.as_deref().ok_or_else(|| {
+                Error::Forbidden("the author does not allow third-party downloads".into())
+            })?;
+            if !curseforge_host(source) {
+                return Err(Error::Upstream("unexpected download host".into()));
+            }
+            http::download(
+                &self.http,
+                source,
+                &scratch,
+                &curseforge_checksum(&found.data),
+            )
+            .await
+            .map_err(upstream)?;
+            let archive = scratch.clone();
+            tokio::task::spawn_blocking(move || jar_names(&archive))
+                .await
+                .map_err(|e| Error::Other(e.into()))?
+        }
+        .await;
+        let _ = fs_err::tokio::remove_file(&scratch).await;
+        match result {
+            Ok(jars) => Some(jars),
+            Err(err) => {
+                tracing::warn!(project, file, error = %err, "could not read the server pack");
+                None
+            }
+        }
     }
 
     async fn modrinth_versions(
@@ -1275,6 +1364,19 @@ impl Sources {
         archive: &Path,
         curseforge_key: Option<&str>,
     ) -> Result<MrpackReport> {
+        self.import_pack_with(instance_id, archive, curseforge_key, None)
+            .await
+    }
+
+    /// `server_jars` are the jars of the pack's server build, when it has
+    /// one: the mods missing from it are given to players only.
+    async fn import_pack_with(
+        &self,
+        instance_id: &str,
+        archive: &Path,
+        curseforge_key: Option<&str>,
+        server_jars: Option<&HashSet<String>>,
+    ) -> Result<MrpackReport> {
         let instance = instances::get(self.modpack.db(), instance_id).await?;
         let scratch = self.tmp.join(format!("pack-{}", Uuid::new_v4()));
         fs_err::tokio::create_dir_all(&scratch).await?;
@@ -1289,7 +1391,7 @@ impl Sources {
                 PackArchive::Modrinth(index) => self.import_mrpack_files(&instance, index).await?,
                 PackArchive::Curseforge(manifest) => {
                     let key = Self::curseforge_key(curseforge_key)?;
-                    self.import_curseforge_files(&instance, manifest, key)
+                    self.import_curseforge_files(&instance, manifest, key, server_jars)
                         .await?
                 }
             };
@@ -1310,6 +1412,7 @@ impl Sources {
         instance: &Instance,
         manifest: CfManifest,
         key: &str,
+        server_jars: Option<&HashSet<String>>,
     ) -> Result<MrpackReport> {
         let loader = manifest.loader();
         let mismatch = manifest.minecraft.version != instance.minecraft_version
@@ -1349,6 +1452,20 @@ impl Sources {
             checksum: Checksum,
             hints: FileHints,
         }
+        let mod_jars: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name.to_ascii_lowercase())
+            .filter(|name| name.ends_with(".jar"))
+            .collect();
+        let client_only = client_only_by_server_pack(server_jars, &mod_jars);
+        if !client_only.is_empty() {
+            tracing::info!(
+                instance = %instance.id,
+                mods = client_only.len(),
+                "mods missing from the server pack go to players only"
+            );
+        }
+
         let mut jobs = Vec::new();
         for listed in &manifest.files {
             let project = projects.get(&listed.project_id);
@@ -1417,7 +1534,13 @@ impl Sources {
                 source,
                 checksum: curseforge_checksum(file),
                 hints: FileHints {
-                    side: side.or_else(|| curseforge_side(file)),
+                    side: side
+                        .or_else(|| {
+                            client_only
+                                .contains(&name.to_ascii_lowercase())
+                                .then_some(Side::Client)
+                        })
+                        .or_else(|| curseforge_side(file)),
                     optional: (!listed.required).then_some(true),
                 },
             });
@@ -1716,5 +1839,37 @@ mod tests {
         zip.finish().unwrap();
         let err = open_pack(&archive, tmp.path()).err().unwrap();
         assert!(err.to_string().contains("manifest.json"), "{err}");
+    }
+
+    #[test]
+    fn mods_missing_from_the_server_pack_are_client_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("server.zip");
+        let mut zip = zip::ZipWriter::new(fs_err::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for name in [
+            "mods/Tech-1.0.jar",
+            "mods/1.12.2/Core.jar",
+            "forge-universal.jar",
+            "start.sh",
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(b"x").unwrap();
+        }
+        zip.finish().unwrap();
+        let server = jar_names(&archive).unwrap();
+        assert!(server.contains("tech-1.0.jar") && server.contains("core.jar"));
+        assert!(!server.contains("start.sh"));
+
+        let mods: Vec<String> = ["tech-1.0.jar", "core.jar", "minimap.jar"]
+            .map(String::from)
+            .to_vec();
+        let client = client_only_by_server_pack(Some(&server), &mods);
+        assert_eq!(client, HashSet::from(["minimap.jar".to_owned()]));
+
+        // A server build made of other files says nothing about sides.
+        let other = HashSet::from(["unrelated.jar".to_owned()]);
+        assert!(client_only_by_server_pack(Some(&other), &mods).is_empty());
+        assert!(client_only_by_server_pack(None, &mods).is_empty());
     }
 }
