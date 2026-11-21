@@ -35,8 +35,9 @@ changed and starts the game.
 - Live console, automatic restart after a crash with a growing delay, crash
   reports, scheduled world backups.
 - A file manager with a trash, a game-rules editor, worlds and player lists.
-- Mods from an upload, a `.mrpack` import, or a search of Modrinth and
-  CurseForge. Each jar is inspected to tell client-only, server-only and
+- Mods from an upload or a search of Modrinth and CurseForge; whole
+  modpacks from either catalogue or from a `.mrpack` or CurseForge zip.
+  Each jar is inspected to tell client-only, server-only and
   shared mods apart.
 - Player accounts with invites, skins and capes. Servers and clients
   authenticate against the daemon through
