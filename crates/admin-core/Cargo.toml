@@ -18,9 +18,9 @@ hex = "0.4.3"
 mime_guess = "2.0.5"
 png = "0.18.1"
 rand = "0.10.3"
-relic-jar = { version = "0.0.5", path = "../relic-jar" }
-relic-mc = { version = "0.0.5", path = "../relic-mc" }
-relic-proto = { version = "0.0.5", path = "../relic-proto" }
+relic-jar = { version = "0.0.6", path = "../relic-jar" }
+relic-mc = { version = "0.0.6", path = "../relic-mc" }
+relic-proto = { version = "0.0.6", path = "../relic-proto" }
 rsa = { version = "0.10", features = ["pkcs1v15"] }
 rust-embed = "8.14.0"
 serde = { version = "1.0.229", features = ["derive"] }

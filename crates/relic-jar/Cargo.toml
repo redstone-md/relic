@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-relic-proto = { version = "0.0.5", path = "../relic-proto" }
+relic-proto = { version = "0.0.6", path = "../relic-proto" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
