@@ -202,7 +202,7 @@ export function ConsoleTab({ instance }: { instance: Instance }) {
             aria-label={t("{name} console", { name: instance.name })}
             aria-live="off"
             tabIndex={0}
-            className="h-[min(58dvh,44rem)] min-h-80 flex-1 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            className="h-[min(58dvh,44rem)] min-h-80 grow basis-auto overflow-y-auto px-4 py-3 font-mono text-[13px] leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
           >
             {lines.length === 0 ? (
               halted(status) ? (
