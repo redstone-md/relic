@@ -19,8 +19,8 @@ dirs = "6.0.0"
 hex = "0.4.3"
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-relic-mc = { version = "0.0.4", path = "../relic-mc" }
-relic-proto = { version = "0.0.4", path = "../relic-proto" }
+relic-mc = { version = "0.0.5", path = "../relic-mc" }
+relic-proto = { version = "0.0.5", path = "../relic-proto" }
 reqwest = { version = "0.13.5", default-features = false, features = ["gzip", "http2", "json", "rustls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
