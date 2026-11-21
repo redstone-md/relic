@@ -43,12 +43,26 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = std::env::var_os("RELIC_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("data"));
+    // Servers are started with their own folder as the working directory, so
+    // a relative path to Java or to a jar would point nowhere from there.
+    let data_dir = std::path::absolute(&data_dir)
+        .map_err(|e| anyhow::anyhow!("RELIC_DATA_DIR is not a usable path: {e}"))?;
     let bind: SocketAddr = std::env::var("RELIC_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse()
         .map_err(|e| anyhow::anyhow!("RELIC_BIND is not a socket address: {e}"))?;
 
-    let app = App::open(&data_dir, env_flag("RELIC_TRUST_PROXY")).await?;
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        data_dir = %data_dir.display(),
+        %bind,
+        "starting"
+    );
+    let app = App::open(&data_dir, env_flag("RELIC_TRUST_PROXY"))
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("could not open the data folder {}: {e}", data_dir.display())
+        })?;
     let rescanned = app.modpack.rescan().await?;
     if rescanned > 0 {
         tracing::info!(
@@ -87,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         ip => ip.to_string(),
     };
     app.supervisor.set_auth_agent(AuthAgent {
-        dir: std::path::absolute(&data_dir)?.join("authlib-injector"),
+        dir: data_dir.join("authlib-injector"),
         api_url: format!("http://{local}:{}/api/yggdrasil", bind.port()),
     });
     if let Err(e) = app.supervisor.autostart().await {
