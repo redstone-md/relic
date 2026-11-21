@@ -267,14 +267,14 @@ export function ModsTab({ instance }: { instance: Instance }) {
           <h2 className="font-medium">{t("Import a modpack")}</h2>
           <p className="text-sm text-muted-foreground">
             {t(
-              "A Modrinth .mrpack brings its mods, configs and the side of every file in one step.",
+              "A Modrinth .mrpack or a CurseForge .zip brings its mods and configs in one step.",
             )}
           </p>
         </div>
         <input
           ref={packPicker}
           type="file"
-          accept=".mrpack"
+          accept=".mrpack,.zip"
           hidden
           onChange={(event) => {
             const file = event.target.files?.[0];
@@ -288,7 +288,7 @@ export function ModsTab({ instance }: { instance: Instance }) {
           busy={importPack.isPending}
           onClick={() => packPicker.current?.click()}
         >
-          {importPack.isPending ? t("Importing") : t("Choose .mrpack")}
+          {importPack.isPending ? t("Importing") : t("Choose a file")}
         </ActionButton>
       </Tile>
       )}

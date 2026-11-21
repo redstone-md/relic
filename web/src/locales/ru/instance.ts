@@ -102,10 +102,10 @@ export default {
   "Add it": "Добавить",
   "Add all {count}": "Добавить все ({count})",
   "Import a modpack": "Импорт сборки",
-  "A Modrinth .mrpack brings its mods, configs and the side of every file in one step.":
-    "Файл .mrpack с Modrinth за один шаг добавляет моды, конфиги и сторону каждого файла.",
+  "A Modrinth .mrpack or a CurseForge .zip brings its mods and configs in one step.":
+    "Файл .mrpack с Modrinth или .zip с CurseForge за один шаг добавляет моды и конфиги.",
   Importing: "Импорт",
-  "Choose .mrpack": "Выбрать .mrpack",
+  "Choose a file": "Выбрать файл",
   "Search {provider} for {loader} {version}": "Поиск на {provider} для {loader} {version}",
   "Search mods": "Поиск модов",
   Search: "Найти",

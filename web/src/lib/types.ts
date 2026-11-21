@@ -136,6 +136,7 @@ export interface FsUsage {
 
 /** A ready-made modpack in the catalogue. */
 export interface PackHit {
+  provider: Provider;
   id: string;
   title: string;
   description: string;

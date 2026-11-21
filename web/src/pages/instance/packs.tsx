@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
+import { Link } from "wouter";
 
 import { ActionButton, Confirm, Empty, ErrorNote, Loading, Tile } from "@/components/common";
 import { Icon } from "@/components/icon";
@@ -13,11 +14,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, message } from "@/lib/api";
 import { compact, LOADER_NAMES } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import { keys } from "@/lib/queries";
-import type { Instance, MrpackReport, PackHit } from "@/lib/types";
+import { keys, useSettings } from "@/lib/queries";
+import type { Instance, MrpackReport, PackHit, Provider } from "@/lib/types";
 
 const ANY = "any";
 
@@ -128,7 +130,7 @@ function Card({
   );
 }
 
-/** Ready-made modpacks from Modrinth that fit the instance, one click from being installed. */
+/** Ready-made modpacks from Modrinth or CurseForge that fit the instance, one click from being installed. */
 export function PackCatalogue({
   instance,
   onReport,
@@ -138,28 +140,42 @@ export function PackCatalogue({
 }) {
   const { t } = useI18n();
   const client = useQueryClient();
+  const settings = useSettings();
   const base = `/admin/instances/${instance.id}`;
+  const [provider, setProvider] = useState<Provider>("modrinth");
   const [draft, setDraft] = useState("");
   const [term, setTerm] = useState("");
   const [category, setCategory] = useState(ANY);
   const [sort, setSort] = useState("downloads");
   const [asking, setAsking] = useState<PackHit | null>(null);
   const vanilla = instance.loader.type === "vanilla";
+  const curseforge = provider === "curseforge";
+  const keyMissing = curseforge && settings.data?.curseforge_key_set === false;
+  // CurseForge has no kinds that match ours and no follower count.
+  const sorts = curseforge ? SORTS.filter(([id]) => id !== "follows") : SORTS;
+  const order = sorts.some(([id]) => id === sort) ? sort : "downloads";
 
   const results = useQuery({
-    queryKey: ["pack-search", instance.id, term, category, sort],
+    queryKey: ["pack-search", instance.id, provider, term, curseforge ? ANY : category, order],
     queryFn: ({ signal }) =>
       api<PackHit[]>("GET", `${base}/packs/search`, {
-        query: { q: term, category: category === ANY ? "" : category, sort },
+        query: {
+          provider,
+          q: term,
+          category: curseforge || category === ANY ? "" : category,
+          sort: order,
+        },
         signal,
       }),
-    enabled: !vanilla,
+    enabled: !vanilla && !keyMissing,
     staleTime: 60_000,
   });
 
   const install = useMutation({
     mutationFn: (hit: PackHit) =>
-      api<MrpackReport>("POST", `${base}/packs/install`, { json: { project: hit.id } }),
+      api<MrpackReport>("POST", `${base}/packs/install`, {
+        json: { provider: hit.provider, project: hit.id },
+      }),
     onSuccess: (report) => {
       onReport(report);
       void client.invalidateQueries({ queryKey: keys.files(instance.id) });
@@ -184,6 +200,12 @@ export function PackCatalogue({
   return (
     <Tile className="gap-4">
       <div className="flex flex-wrap items-center gap-2">
+        <Tabs value={provider} onValueChange={(next) => setProvider(next as Provider)}>
+          <TabsList>
+            <TabsTrigger value="modrinth">Modrinth</TabsTrigger>
+            <TabsTrigger value="curseforge">CurseForge</TabsTrigger>
+          </TabsList>
+        </Tabs>
         <form onSubmit={submit} className="flex min-w-56 flex-1 items-center gap-2">
           <div className="relative flex-1">
             <Icon
@@ -205,25 +227,27 @@ export function PackCatalogue({
             {t("Search")}
           </Button>
         </form>
-        <Select value={category} onValueChange={setCategory}>
-          <SelectTrigger aria-label={t("Kind of modpack")} className="w-44">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ANY}>{t("Any kind")}</SelectItem>
-            {CATEGORIES.map(([id, name]) => (
-              <SelectItem key={id} value={id}>
-                {t(name)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={sort} onValueChange={setSort}>
+        {!curseforge && (
+          <Select value={category} onValueChange={setCategory}>
+            <SelectTrigger aria-label={t("Kind of modpack")} className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>{t("Any kind")}</SelectItem>
+              {CATEGORIES.map(([id, name]) => (
+                <SelectItem key={id} value={id}>
+                  {t(name)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        <Select value={order} onValueChange={setSort}>
           <SelectTrigger aria-label={t("Order")} className="w-48">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {SORTS.map(([id, name]) => (
+            {sorts.map(([id, name]) => (
               <SelectItem key={id} value={id}>
                 {t(name)}
               </SelectItem>
@@ -241,7 +265,17 @@ export function PackCatalogue({
         </p>
       )}
 
-      {results.isPending ? (
+      {keyMissing ? (
+        <Empty icon="key" title={t("CurseForge needs an API key")}>
+          <p>{t("CurseForge only answers requests signed with your own key.")}</p>
+          <Button asChild variant="outline" className="mt-4">
+            <Link href="/settings">
+              <Icon name="settings" />
+              {t("Add the key in Settings")}
+            </Link>
+          </Button>
+        </Empty>
+      ) : results.isPending ? (
         <Loading label={t("Searching")} />
       ) : results.error ? (
         <ErrorNote error={results.error} />
@@ -256,7 +290,7 @@ export function PackCatalogue({
         <ul className="grid gap-(--frame) sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {results.data.map((hit) => (
             <Card
-              key={hit.id}
+              key={`${hit.provider}:${hit.id}`}
               hit={hit}
               busy={install.isPending && install.variables.id === hit.id}
               locked={install.isPending}
@@ -270,10 +304,17 @@ export function PackCatalogue({
         open={asking !== null}
         onOpenChange={(open) => !open && setAsking(null)}
         title={t("Install {title}?", { title: asking?.title ?? "" })}
-        description={t(
-          "Its newest build for {loader} {version} is downloaded from Modrinth and its mods and configs are added to this server's modpack. Files already there with the same name are replaced; nothing else is removed.",
-          { loader: LOADER_NAMES[instance.loader.type], version: instance.minecraft_version },
-        )}
+        description={
+          asking?.provider === "curseforge"
+            ? t(
+                "Its newest build for Minecraft {version} is downloaded from CurseForge and its mods and configs are added to this server's modpack. Mods whose authors forbid automatic downloads are listed afterwards with a link, to add by hand. Files already there with the same name are replaced; nothing else is removed.",
+                { version: instance.minecraft_version },
+              )
+            : t(
+                "Its newest build for {loader} {version} is downloaded from Modrinth and its mods and configs are added to this server's modpack. Files already there with the same name are replaced; nothing else is removed.",
+                { loader: LOADER_NAMES[instance.loader.type], version: instance.minecraft_version },
+              )
+        }
         action={t("Install")}
         onConfirm={() => asking && install.mutate(asking)}
       />

@@ -374,6 +374,8 @@ export default {
   "Install {title}?": "Установить {title}?",
   "Its newest build for {loader} {version} is downloaded from Modrinth and its mods and configs are added to this server's modpack. Files already there with the same name are replaced; nothing else is removed.":
     "С Modrinth скачается её последняя версия для {loader} {version}, а моды и конфиги добавятся в сборку этого сервера. Файлы с теми же именами заменятся, остальное останется на месте.",
+  "Its newest build for Minecraft {version} is downloaded from CurseForge and its mods and configs are added to this server's modpack. Mods whose authors forbid automatic downloads are listed afterwards with a link, to add by hand. Files already there with the same name are replaced; nothing else is removed.":
+    "С CurseForge скачается её последняя версия для Minecraft {version}, а моды и конфиги добавятся в сборку этого сервера. Моды, авторы которых запретили автоматическую загрузку, будут перечислены после установки со ссылкой, их нужно добавить вручную. Файлы с теми же именами заменятся, остальное останется на месте.",
   "Downloading {title} and its mods. A large pack takes a few minutes.":
     "Скачивается {title} и её моды. Большая сборка занимает несколько минут.",
   "No modpack for {loader} {version} matches. Try another kind or fewer words.":
