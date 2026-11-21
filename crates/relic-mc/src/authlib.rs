@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
+use fs_err::tokio as fs;
 use serde::Deserialize;
-use tokio::fs;
 
 use crate::Result;
 use crate::http::{Checksum, download, get_json};

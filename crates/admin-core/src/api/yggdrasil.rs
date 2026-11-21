@@ -518,7 +518,7 @@ async fn texture(State(app): State<AppState>, Path(sha256): Path<String>) -> Ygg
     if !is_sha256(&sha256) || !users::is_texture(&app.db, &sha256).await? {
         return Err(Error::NotFound("texture").into());
     }
-    let bytes = match tokio::fs::read(app.modpack.blobs().path(&sha256)?).await {
+    let bytes = match fs_err::tokio::read(app.modpack.blobs().path(&sha256)?).await {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::NotFound("texture").into());

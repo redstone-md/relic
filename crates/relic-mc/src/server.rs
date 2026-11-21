@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use fs_err::tokio as fs;
 use relic_proto::{Loader, LoaderKind};
 use serde::{Deserialize, Serialize};
-use tokio::fs;
 use tokio::process::Command;
 
 use crate::http::{Checksum, download, get_json};
@@ -279,7 +279,8 @@ async fn run_installer(java: &Path, dir: &Path, args: &[&str]) -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(|e| crate::process::spawn_error(java, dir, e))?;
     let output = tokio::time::timeout(INSTALLER_TIMEOUT, child.wait_with_output())
         .await
         .map_err(|_| Error::Installer("timed out".into()))??;
@@ -431,8 +432,8 @@ mod tests {
     use super::*;
 
     fn touch(path: &Path) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"").unwrap();
+        fs_err::create_dir_all(path.parent().unwrap()).unwrap();
+        fs_err::write(path, b"").unwrap();
     }
 
     #[test]

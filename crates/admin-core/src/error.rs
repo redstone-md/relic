@@ -14,7 +14,7 @@ pub enum Error {
     RateLimited,
     #[error("upstream service error: {0}")]
     Upstream(String),
-    #[error("database error: {0}")]
+    #[error("database error: {0}{hint}", hint = crate::db::explain(.0))]
     Db(#[from] sqlx::Error),
     #[error("migration error: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),

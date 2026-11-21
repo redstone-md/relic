@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 flate2 = "1.1.11"
+fs-err = { version = "3.3.2", features = ["tokio"] }
 futures-util = "0.3.34"
 hex = "0.4.3"
 relic-proto = { version = "0.0.1", path = "../relic-proto" }

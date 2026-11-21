@@ -8,11 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fs_err::tokio as fs;
 use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
 use relic_proto::{Loader, LoaderKind};
 use serde::Deserialize;
-use tokio::fs;
 
 use crate::http::{Checksum, download, get_text};
 use crate::mojang::{self, version_key};
@@ -252,8 +252,8 @@ pub(crate) async fn fetch_all(
 /// Unpacks a pre-1.19 bundle of native libraries.
 fn extract_natives(jar: &Path, into: &Path, exclude: &[String]) -> Result<()> {
     let archive_err = |e: zip::result::ZipError| Error::Archive(format!("{}: {e}", jar.display()));
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(jar)?).map_err(archive_err)?;
-    std::fs::create_dir_all(into)?;
+    let mut archive = zip::ZipArchive::new(fs_err::File::open(jar)?).map_err(archive_err)?;
+    fs_err::create_dir_all(into)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(archive_err)?;
         if entry.is_dir()
@@ -267,13 +267,13 @@ fn extract_natives(jar: &Path, into: &Path, exclude: &[String]) -> Result<()> {
             continue;
         };
         let dest = into.join(relative);
-        if std::fs::metadata(&dest).is_ok_and(|meta| meta.len() == entry.size()) {
+        if fs_err::metadata(&dest).is_ok_and(|meta| meta.len() == entry.size()) {
             continue;
         }
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs_err::create_dir_all(parent)?;
         }
-        std::io::copy(&mut entry, &mut std::fs::File::create(&dest)?)?;
+        std::io::copy(&mut entry, &mut fs_err::File::create(&dest)?)?;
     }
     Ok(())
 }
@@ -795,7 +795,7 @@ mod tests {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let jar = dir.path().join("natives.jar");
-        let mut writer = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+        let mut writer = zip::ZipWriter::new(fs_err::File::create(&jar).unwrap());
         let options = zip::write::SimpleFileOptions::default();
         writer.start_file("lwjgl.dll", options).unwrap();
         writer.write_all(b"native").unwrap();
@@ -805,7 +805,7 @@ mod tests {
 
         let into = dir.path().join("out");
         extract_natives(&jar, &into, &["META-INF/".to_owned()]).unwrap();
-        assert_eq!(std::fs::read(into.join("lwjgl.dll")).unwrap(), b"native");
+        assert_eq!(fs_err::read(into.join("lwjgl.dll")).unwrap(), b"native");
         assert!(!into.join("META-INF").exists());
     }
 }

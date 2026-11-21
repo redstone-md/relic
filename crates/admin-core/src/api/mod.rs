@@ -21,7 +21,7 @@ use axum::routing::{delete, get, patch, post, put};
 use relic_mc::reqwest;
 use relic_proto::ApiError;
 use sqlx::SqlitePool;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use uuid::Uuid;
 
 use crate::backups::Backups;
@@ -73,7 +73,7 @@ impl App {
     /// Opens the data directory and wires the services together. Starts no
     /// background work.
     pub async fn open(data_dir: &Path, trust_proxy: bool) -> Result<AppState> {
-        tokio::fs::create_dir_all(data_dir).await?;
+        fs_err::tokio::create_dir_all(data_dir).await?;
         let db = crate::db::open(&data_dir.join("relic.db")).await?;
         let blobs = BlobStore::open(data_dir.join("blobs")).await?;
         let modpack = Modpack::new(db.clone(), blobs);
@@ -88,10 +88,10 @@ impl App {
             },
         );
         let tmp = data_dir.join("tmp");
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-        tokio::fs::create_dir_all(&tmp).await?;
+        let _ = fs_err::tokio::remove_dir_all(&tmp).await;
+        fs_err::tokio::create_dir_all(&tmp).await?;
         let keys_dir = data_dir.join("keys");
-        tokio::fs::create_dir_all(&keys_dir).await?;
+        fs_err::tokio::create_dir_all(&keys_dir).await?;
         Ok(Arc::new(App {
             backups: Backups::new(db.clone(), supervisor.clone(), data_dir.join("backups")),
             sources: Sources::new(http.clone(), modpack.clone(), tmp.clone()),
@@ -369,6 +369,11 @@ pub fn router(app: AppState) -> Router {
         .merge(yggdrasil::router())
         .fallback(assets::serve)
         .layer(axum::middleware::from_fn(api_location))
-        .layer(TraceLayer::new_for_http())
+        // The span puts the method and the address on every line a request
+        // logs, so a failure says which request it belongs to.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
+        )
         .with_state(app)
 }

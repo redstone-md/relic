@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use fs_err::tokio as fs;
 use serde::Deserialize;
-use tokio::fs;
 use tokio::process::Command;
 
 use crate::client::{self, fetch_all, jar_path, library_fetches, library_path, safe_id};
@@ -65,7 +65,7 @@ fn archive_error(e: zip::result::ZipError) -> Error {
     Error::Archive(e.to_string())
 }
 
-fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Vec<u8>> {
+fn read_entry(archive: &mut zip::ZipArchive<fs_err::File>, name: &str) -> Result<Vec<u8>> {
     let mut entry = archive
         .by_name(name.trim_start_matches('/'))
         .map_err(|e| Error::Archive(format!("{name}: {e}")))?;
@@ -79,7 +79,7 @@ fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Resul
 /// refers to into `scratch`.
 fn unpack(installer: &Path, libraries: &Path, scratch: &Path) -> Result<Unpacked> {
     let mut archive =
-        zip::ZipArchive::new(std::fs::File::open(installer)?).map_err(archive_error)?;
+        zip::ZipArchive::new(fs_err::File::open(installer)?).map_err(archive_error)?;
     let raw = read_entry(&mut archive, "install_profile.json")?;
     let document: serde_json::Value =
         serde_json::from_slice(&raw).map_err(|e| Error::Installer(e.to_string()))?;
@@ -112,9 +112,9 @@ fn unpack(installer: &Path, libraries: &Path, scratch: &Path) -> Result<Unpacked
             Err(_) => continue,
         };
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs_err::create_dir_all(parent)?;
         }
-        std::io::copy(&mut entry, &mut std::fs::File::create(&dest)?)?;
+        std::io::copy(&mut entry, &mut fs_err::File::create(&dest)?)?;
     }
     Ok(Unpacked {
         install,
@@ -125,7 +125,7 @@ fn unpack(installer: &Path, libraries: &Path, scratch: &Path) -> Result<Unpacked
 /// `Main-Class` of a JAR's manifest. Long manifest lines continue on the
 /// next line after a single space.
 fn main_class(jar: &Path) -> Result<String> {
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(jar)?).map_err(archive_error)?;
+    let mut archive = zip::ZipArchive::new(fs_err::File::open(jar)?).map_err(archive_error)?;
     let manifest = String::from_utf8_lossy(&read_entry(&mut archive, "META-INF/MANIFEST.MF")?)
         .replace("\r\n", "\n")
         .replace("\n ", "");
@@ -229,7 +229,8 @@ async fn run_processor(
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let output = tokio::time::timeout(PROCESSOR_TIMEOUT, command.output())
         .await
-        .map_err(|_| Error::Installer(format!("{class} did not finish in time")))??;
+        .map_err(|_| Error::Installer(format!("{class} did not finish in time")))?
+        .map_err(|e| crate::process::spawn_error(java, root, e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -392,7 +393,7 @@ mod tests {
     }
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
-        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let mut writer = zip::ZipWriter::new(fs_err::File::create(path).unwrap());
         let options = zip::write::SimpleFileOptions::default();
         for (name, bytes) in entries {
             writer.start_file(*name, options).unwrap();
@@ -444,11 +445,11 @@ mod tests {
         assert_eq!(unpacked.install.version, "1.20.1-forge-47.2.0");
         assert_eq!(unpacked.install.processors.len(), 1);
         assert_eq!(
-            std::fs::read(libraries.join("net/minecraftforge/forge/1/forge-1.jar")).unwrap(),
+            fs_err::read(libraries.join("net/minecraftforge/forge/1/forge-1.jar")).unwrap(),
             b"forge"
         );
         assert_eq!(
-            std::fs::read(scratch.join("data/client.lzma")).unwrap(),
+            fs_err::read(scratch.join("data/client.lzma")).unwrap(),
             b"patch"
         );
         assert!(!scratch.join("data/server.lzma").exists());

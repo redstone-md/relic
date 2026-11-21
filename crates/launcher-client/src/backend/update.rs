@@ -167,16 +167,16 @@ pub async fn install(update: &Update, data_dir: &Path) -> Result<()> {
     let dir = data_dir.join("update");
     tokio::task::spawn_blocking(move || {
         verify(&binary, &signature, key, &expected)?;
-        std::fs::create_dir_all(&dir)?;
+        fs_err::create_dir_all(&dir)?;
         let staged = dir.join(&asset);
-        std::fs::write(&staged, &binary)?;
+        fs_err::write(&staged, &binary)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+            fs_err::set_permissions(&staged, fs_err::Permissions::from_mode(0o755))?;
         }
         let replaced = self_replace::self_replace(&staged);
-        let _ = std::fs::remove_file(&staged);
+        let _ = fs_err::remove_file(&staged);
         Ok(replaced?)
     })
     .await

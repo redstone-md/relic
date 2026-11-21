@@ -140,15 +140,15 @@ async fn mod_icon(
 ) -> Option<Vec<u8>> {
     use sha2::{Digest, Sha256};
     let path = dir.join(sha256);
-    if let Ok(bytes) = tokio::fs::read(&path).await {
+    if let Ok(bytes) = fs_err::tokio::read(&path).await {
         return Some(bytes);
     }
     let bytes = client.icon(instance, sha256).await?;
     if !hex::encode(Sha256::digest(&bytes)).eq_ignore_ascii_case(sha256) {
         return None;
     }
-    if tokio::fs::create_dir_all(dir).await.is_ok() {
-        drop(tokio::fs::write(&path, &bytes).await);
+    if fs_err::tokio::create_dir_all(dir).await.is_ok() {
+        drop(fs_err::tokio::write(&path, &bytes).await);
     }
     Some(bytes)
 }
@@ -566,7 +566,7 @@ impl Launcher {
     pub(super) fn open_folder(&mut self, cx: &mut Context<Self>) {
         let dir = self.pack_dir();
         // Nothing is there before the first launch.
-        if let Err(err) = std::fs::create_dir_all(&dir) {
+        if let Err(err) = fs_err::create_dir_all(&dir) {
             self.fail(err);
             cx.notify();
             return;
@@ -1159,7 +1159,7 @@ impl Launcher {
             window,
             cx,
             async move {
-                let png = tokio::fs::read(&path)
+                let png = fs_err::tokio::read(&path)
                     .await
                     .map_err(|err| api::Error::Protocol(tf(Msg::CannotReadFile, &[&err])))?;
                 if png.len() > MAX_TEXTURE_BYTES {

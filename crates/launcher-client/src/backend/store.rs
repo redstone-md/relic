@@ -80,7 +80,7 @@ impl Config {
     /// Reads the saved configuration. A missing or unreadable file gives the
     /// defaults: losing preferences beats refusing to start.
     pub fn load(dir: &Path) -> Self {
-        let mut config: Config = std::fs::read(Self::path(dir))
+        let mut config: Config = fs_err::read(Self::path(dir))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
@@ -90,14 +90,14 @@ impl Config {
 
     /// Writes through a temporary file so a crash never leaves half a config.
     pub fn save(&self, dir: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(dir)?;
+        fs_err::create_dir_all(dir)?;
         let path = Self::path(dir);
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(
+        fs_err::write(
             &tmp,
             serde_json::to_vec_pretty(self).map_err(io::Error::other)?,
         )?;
-        std::fs::rename(tmp, path)
+        fs_err::rename(tmp, path)
     }
 
     pub fn set_optional(&mut self, instance: &str, path: &str, enabled: bool) {
@@ -136,14 +136,14 @@ mod tests {
         config.save(dir.path()).unwrap();
         assert_eq!(Config::load(dir.path()), config);
 
-        std::fs::write(Config::path(dir.path()), b"{ not json").unwrap();
+        fs_err::write(Config::path(dir.path()), b"{ not json").unwrap();
         assert_eq!(Config::load(dir.path()), Config::default());
     }
 
     #[test]
     fn memory_is_clamped_on_load() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(Config::path(dir.path()), br#"{"memory_mb": 12}"#).unwrap();
+        fs_err::write(Config::path(dir.path()), br#"{"memory_mb": 12}"#).unwrap();
         assert_eq!(Config::load(dir.path()).memory_mb, MIN_MEMORY_MB);
     }
 

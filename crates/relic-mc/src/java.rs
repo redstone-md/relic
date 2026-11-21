@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use fs_err::tokio as fs;
 use serde::Deserialize;
-use tokio::fs;
 
 use crate::http::{Checksum, download, get_json};
 use crate::{Error, Result};
@@ -131,7 +131,7 @@ fn find_java(dir: &Path, platform: Platform) -> Option<PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+    for entry in fs_err::read_dir(dir).ok()?.flatten() {
         let top = entry.path();
         if !top.is_dir() {
             continue;
@@ -209,13 +209,13 @@ pub async fn ensure_runtime(
 }
 
 fn extract(archive: &Path, dest: &Path) -> Result<()> {
-    std::fs::create_dir_all(dest)?;
+    fs_err::create_dir_all(dest)?;
     let name = archive
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let file = std::fs::File::open(archive)?;
+    let file = fs_err::File::open(archive)?;
     if name.ends_with(".zip") {
         // `extract` refuses entries that would land outside `dest`.
         zip::ZipArchive::new(file)
@@ -252,8 +252,8 @@ mod tests {
         assert!(find_java(dir.path(), platform).is_none());
 
         let bin = dir.path().join("jdk-21.0.13+9-jre").join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join(platform.java_binary()), b"").unwrap();
+        fs_err::create_dir_all(&bin).unwrap();
+        fs_err::write(bin.join(platform.java_binary()), b"").unwrap();
         assert_eq!(
             find_java(dir.path(), platform).unwrap(),
             bin.join(platform.java_binary())

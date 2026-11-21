@@ -59,7 +59,7 @@ impl Keys {
     /// Reads the key at `path`, creating it on first run. The key must not
     /// change afterwards: clients cache the public half.
     pub async fn load_or_create(path: &Path) -> Result<Self> {
-        match tokio::fs::read_to_string(path).await {
+        match fs_err::tokio::read_to_string(path).await {
             Ok(pem) => return Self::from_pem(&pem),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
@@ -90,7 +90,7 @@ impl Keys {
 /// Writes the key readable by the daemon's user only.
 async fn write_private(path: &Path, pem: &str) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let mut options = tokio::fs::OpenOptions::new();
+    let mut options = fs_err::tokio::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);

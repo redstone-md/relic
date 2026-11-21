@@ -404,6 +404,7 @@ impl Inner {
                 Exit::Clean => break,
                 Exit::Crashed(message) => message,
             };
+            tracing::warn!(instance = %slot.id, error = %message, "server stopped unexpectedly");
             slot.note(&message);
             if begun.elapsed() >= HEALTHY_RUN {
                 crashes = 0;
@@ -424,6 +425,7 @@ impl Inner {
                 return;
             }
             if crashes >= MAX_RESTARTS {
+                tracing::error!(instance = %slot.id, crashes, "giving up on restarting the server");
                 slot.note(format!("giving up after {crashes} consecutive crashes"));
                 return;
             }
@@ -538,6 +540,12 @@ impl Inner {
         extra.extend(agent);
         let command = server::launch_command(&installed, &java, instance.memory_mb, &extra);
 
+        tracing::info!(
+            instance = %slot.id,
+            program = %std::path::Path::new(&command.program).display(),
+            dir = %dir.display(),
+            "starting server"
+        );
         let started = SystemTime::now();
         let mut child = Command::new(&command.program)
             .args(&command.args)
@@ -546,7 +554,10 @@ impl Inner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .map_err(|e| {
+                relic_mc::process::spawn_error(std::path::Path::new(&command.program), &dir, e)
+            })?;
         *slot.stdin.lock().await = child.stdin.take();
         self.publish(slot, |info| {
             info.status = InstanceStatus::Starting;
@@ -654,7 +665,7 @@ fn parse_line(line: &str) -> Option<LogEvent<'_>> {
 
 /// The crash report written since `since`, as an instance-relative path.
 fn newest_crash_report(dir: &Path, since: SystemTime) -> Option<String> {
-    std::fs::read_dir(dir.join("crash-reports"))
+    fs_err::read_dir(dir.join("crash-reports"))
         .ok()?
         .flatten()
         .filter_map(|entry| {

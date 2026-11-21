@@ -3,11 +3,11 @@
 use std::path::Path;
 use std::time::Duration;
 
+use fs_err::tokio as fs;
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use crate::{Error, Result};

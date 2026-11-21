@@ -25,11 +25,11 @@ fn cache_path(dir: &Path, url: &str) -> PathBuf {
 pub async fn fetch(http: &reqwest::Client, dir: &Path, url: &str) -> Option<Vec<u8>> {
     let path = cache_path(dir, url);
     let etag_path = path.with_extension("etag");
-    let cached = tokio::fs::read(&path).await.ok();
+    let cached = fs_err::tokio::read(&path).await.ok();
 
     let mut request = http.get(url);
     if cached.is_some()
-        && let Ok(etag) = tokio::fs::read_to_string(&etag_path).await
+        && let Ok(etag) = fs_err::tokio::read_to_string(&etag_path).await
     {
         request = request.header(IF_NONE_MATCH, etag);
     }
@@ -59,11 +59,12 @@ pub async fn fetch(http: &reqwest::Client, dir: &Path, url: &str) -> Option<Vec<
         _ => return cached,
     };
 
-    if tokio::fs::create_dir_all(dir).await.is_ok() && tokio::fs::write(&path, &bytes).await.is_ok()
+    if fs_err::tokio::create_dir_all(dir).await.is_ok()
+        && fs_err::tokio::write(&path, &bytes).await.is_ok()
     {
         match etag {
-            Some(etag) => drop(tokio::fs::write(&etag_path, etag).await),
-            None => drop(tokio::fs::remove_file(&etag_path).await),
+            Some(etag) => drop(fs_err::tokio::write(&etag_path, etag).await),
+            None => drop(fs_err::tokio::remove_file(&etag_path).await),
         }
     }
     Some(bytes)

@@ -252,7 +252,7 @@ pub async fn delete_instance(
     let dir = app.supervisor.instance_dir(&id);
     app.supervisor.forget(&id);
     if query.purge {
-        match tokio::fs::remove_dir_all(&dir).await {
+        match fs_err::tokio::remove_dir_all(&dir).await {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
@@ -326,7 +326,7 @@ pub async fn accept_eula(
         return Err(Error::invalid("the EULA can only be accepted explicitly"));
     }
     let dir = app.supervisor.instance_dir(&id);
-    tokio::fs::create_dir_all(&dir).await?;
+    fs_err::tokio::create_dir_all(&dir).await?;
     server::accept_eula(&dir).await.map_err(upstream)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -413,13 +413,13 @@ struct Scratch(PathBuf);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = fs_err::remove_file(&self.0);
     }
 }
 
 async fn save_body(body: Body, dest: PathBuf, max: u64) -> Result<()> {
     let mut stream = body.into_data_stream();
-    let mut file = tokio::fs::File::create(dest).await?;
+    let mut file = fs_err::tokio::File::create(dest).await?;
     let mut written = 0u64;
     while let Some(chunk) = stream
         .try_next()
@@ -656,7 +656,7 @@ pub async fn download_backup(
     request: Request,
 ) -> Result<Response> {
     let path = app.backups.path(&id, &backup_id)?;
-    if !tokio::fs::try_exists(&path).await? {
+    if !fs_err::tokio::try_exists(&path).await? {
         return Err(Error::NotFound("backup"));
     }
     let mime = mime_guess::mime::APPLICATION_OCTET_STREAM;
@@ -780,7 +780,7 @@ pub async fn fs_archive(
     let root = fs_root(&app, &id).await?;
     let scratch = Scratch(app.tmp.join(format!("{}.zip", Uuid::new_v4())));
     let name = files::archive(&root, &query.path, &scratch.0).await?;
-    let file = tokio::fs::File::open(&scratch.0).await?;
+    let file = fs_err::tokio::File::open(&scratch.0).await?;
     let length = file.metadata().await?.len();
     // The stream owns the scratch file's guard: the zip goes when the
     // download ends or is dropped half way.

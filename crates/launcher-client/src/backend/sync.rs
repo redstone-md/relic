@@ -128,7 +128,7 @@ impl State {
     }
 
     pub fn load(game_dir: &Path) -> Self {
-        std::fs::read(Self::path(game_dir))
+        fs_err::read(Self::path(game_dir))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
@@ -137,11 +137,11 @@ impl State {
     pub fn save(&self, game_dir: &Path) -> io::Result<()> {
         let path = Self::path(game_dir);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs_err::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(self).map_err(io::Error::other)?)?;
-        std::fs::rename(tmp, path)
+        fs_err::write(&tmp, serde_json::to_vec(self).map_err(io::Error::other)?)?;
+        fs_err::rename(tmp, path)
     }
 }
 
@@ -153,7 +153,7 @@ fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
 }
 
 fn sha256_of(path: &Path) -> io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
+    let mut file = fs_err::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 256 * 1024];
     loop {
@@ -191,7 +191,7 @@ struct Found {
 }
 
 fn walk(dir: &Path, prefix: &str, out: &mut Vec<Found>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs_err::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -258,7 +258,7 @@ pub fn plan(
             continue;
         }
         let dest = local(game_dir, path);
-        let meta = std::fs::metadata(&dest).ok().filter(|meta| meta.is_file());
+        let meta = fs_err::metadata(&dest).ok().filter(|meta| meta.is_file());
         // The player's settings arrive once, whatever the pack says.
         let action = if protected(manifest, path) {
             SyncAction::SyncOnce
@@ -345,7 +345,7 @@ pub fn plan(
     }
     for path in doomed {
         // A link counts even when what it points at is gone.
-        if checked(&path).is_ok() && std::fs::symlink_metadata(local(game_dir, &path)).is_ok() {
+        if checked(&path).is_ok() && fs_err::symlink_metadata(local(game_dir, &path)).is_ok() {
             plan.delete.push(path);
         }
     }
@@ -374,7 +374,7 @@ async fn fetch(
     part: &Path,
     count: &(dyn Fn(i64) + Send + Sync),
 ) -> Result<()> {
-    let have = match tokio::fs::metadata(part).await {
+    let have = match fs_err::tokio::metadata(part).await {
         Ok(meta) if meta.len() < file.size => meta.len(),
         _ => 0,
     };
@@ -394,7 +394,7 @@ async fn fetch(
         return Err(failed(&file.path, tf(Msg::ServerAnswered, &[&status])));
     }
     let resumed = have > 0 && status == StatusCode::PARTIAL_CONTENT;
-    let mut out = tokio::fs::OpenOptions::new()
+    let mut out = fs_err::tokio::OpenOptions::new()
         .create(true)
         .write(true)
         .append(resumed)
@@ -435,7 +435,7 @@ async fn install(
     count: &(dyn Fn(i64) + Send + Sync),
 ) -> Result<Known> {
     let parts = game_dir.join(PRIVATE_DIR).join("parts");
-    tokio::fs::create_dir_all(&parts).await?;
+    fs_err::tokio::create_dir_all(&parts).await?;
     let part = parts.join(format!("{}.part", file.sha256));
     let dest = local(game_dir, &file.path);
 
@@ -451,7 +451,7 @@ async fn install(
                     .map_err(io::Error::other)??
             };
             if !hashed.eq_ignore_ascii_case(&file.sha256) {
-                tokio::fs::remove_file(&part).await.ok();
+                fs_err::tokio::remove_file(&part).await.ok();
                 count(-(file.size as i64));
                 return Err(Error::Corrupt(file.path.clone()));
             }
@@ -468,12 +468,12 @@ async fn install(
     }
 
     if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        fs_err::tokio::create_dir_all(parent).await?;
     }
     // `rename` does not replace an existing file on Windows.
-    tokio::fs::remove_file(&dest).await.ok();
-    tokio::fs::rename(&part, &dest).await?;
-    let meta = tokio::fs::metadata(&dest).await?;
+    fs_err::tokio::remove_file(&dest).await.ok();
+    fs_err::tokio::rename(&part, &dest).await?;
+    let meta = fs_err::tokio::metadata(&dest).await?;
     Ok(Known {
         sha256: file.sha256.clone(),
         size: meta.len(),
@@ -496,15 +496,15 @@ pub async fn apply(
 
     for path in &plan.delete {
         let target = local(game_dir, path);
-        match tokio::fs::remove_file(&target).await {
+        match fs_err::tokio::remove_file(&target).await {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             // A link to a folder goes the way folders do; only the link does.
             Err(e) => {
-                let linked = tokio::fs::symlink_metadata(&target)
+                let linked = fs_err::tokio::symlink_metadata(&target)
                     .await
                     .is_ok_and(|meta| !meta.is_file());
-                if !linked || tokio::fs::remove_dir(&target).await.is_err() {
+                if !linked || fs_err::tokio::remove_dir(&target).await.is_err() {
                     return Err(e.into());
                 }
             }
@@ -605,8 +605,8 @@ mod tests {
 
     fn put(dir: &Path, path: &str, content: &[u8]) {
         let dest = local(dir, path);
-        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-        std::fs::write(dest, content).unwrap();
+        fs_err::create_dir_all(dest.parent().unwrap()).unwrap();
+        fs_err::write(dest, content).unwrap();
     }
 
     fn paths(files: &[ManifestFile]) -> Vec<&str> {
@@ -834,7 +834,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         put(outside.path(), "cheat.jar", b"cheat");
-        std::fs::create_dir_all(dir.path().join("mods")).unwrap();
+        fs_err::create_dir_all(dir.path().join("mods")).unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("mods/extra")).unwrap();
         let pack = manifest(ModPolicy::Strict, Vec::new());
         let plan = super::plan(&pack, &BTreeSet::new(), dir.path(), &mut State::default()).unwrap();

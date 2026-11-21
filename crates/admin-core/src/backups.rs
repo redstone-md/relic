@@ -1,7 +1,7 @@
 //! World backups: `tar` + `zstd` archives of an instance's world directories.
 
+use fs_err::File;
 use std::collections::HashSet;
-use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -74,7 +74,7 @@ async fn world_dirs(dir: &Path) -> Result<Vec<String>> {
         format!("{level}_nether"),
         format!("{level}_the_end"),
     ] {
-        if tokio::fs::metadata(dir.join(&name))
+        if fs_err::tokio::metadata(dir.join(&name))
             .await
             .is_ok_and(|m| m.is_dir())
         {
@@ -92,7 +92,7 @@ fn append_dir(
     name: &Path,
 ) -> std::io::Result<()> {
     builder.append_dir(name, source)?;
-    for entry in std::fs::read_dir(source)? {
+    for entry in fs_err::read_dir(source)? {
         let entry = entry?;
         let Ok(kind) = entry.file_type() else {
             continue;
@@ -104,7 +104,7 @@ fn append_dir(
         } else if kind.is_file() && entry.file_name() != "session.lock" {
             // The server holds `session.lock` locked; it is recreated anyway.
             match File::open(&path) {
-                Ok(mut file) => builder.append_file(&inner, &mut file)?,
+                Ok(mut file) => builder.append_file(&inner, file.file_mut())?,
                 Err(err) => tracing::warn!(path = %path.display(), %err, "skipped in backup"),
             }
         }
@@ -165,7 +165,7 @@ impl Backups {
     pub async fn list(&self, instance_id: &str) -> Result<Vec<BackupInfo>> {
         instances::validate_id(instance_id)?;
         let mut backups = Vec::new();
-        let mut entries = match tokio::fs::read_dir(self.root.join(instance_id)).await {
+        let mut entries = match fs_err::tokio::read_dir(self.root.join(instance_id)).await {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(backups),
             Err(err) => return Err(err.into()),
@@ -247,7 +247,7 @@ impl Backups {
         }
 
         let folder = self.root.join(instance_id);
-        tokio::fs::create_dir_all(&folder).await?;
+        fs_err::tokio::create_dir_all(&folder).await?;
         let created_at = now();
         let dest = self.path(instance_id, &created_at.to_string())?;
         let part = folder.join(format!("{created_at}.part"));
@@ -264,20 +264,20 @@ impl Backups {
             .map_err(|e| Error::Other(e.into()))
             .and_then(|r| Ok(r?));
         if let Err(err) = written {
-            let _ = tokio::fs::remove_file(&part).await;
+            let _ = fs_err::tokio::remove_file(&part).await;
             return Err(err);
         }
-        let _ = tokio::fs::remove_file(&dest).await;
-        tokio::fs::rename(&part, &dest).await?;
+        let _ = fs_err::tokio::remove_file(&dest).await;
+        fs_err::tokio::rename(&part, &dest).await?;
         Ok(BackupInfo {
             id: created_at.to_string(),
             created_at,
-            size: tokio::fs::metadata(&dest).await?.len(),
+            size: fs_err::tokio::metadata(&dest).await?.len(),
         })
     }
 
     pub async fn delete(&self, instance_id: &str, backup_id: &str) -> Result<()> {
-        match tokio::fs::remove_file(self.path(instance_id, backup_id)?).await {
+        match fs_err::tokio::remove_file(self.path(instance_id, backup_id)?).await {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 Err(Error::NotFound("backup"))
@@ -292,7 +292,7 @@ impl Backups {
     pub async fn restore(&self, instance_id: &str, backup_id: &str) -> Result<()> {
         instances::get(&self.db, instance_id).await?;
         let archive = self.path(instance_id, backup_id)?;
-        if !tokio::fs::try_exists(&archive).await? {
+        if !fs_err::tokio::try_exists(&archive).await? {
             return Err(Error::NotFound("backup"));
         }
         let _busy = self.claim(instance_id)?;
@@ -323,7 +323,7 @@ impl Backups {
     /// Removes every backup of a deleted instance.
     pub async fn forget(&self, instance_id: &str) -> Result<()> {
         instances::validate_id(instance_id)?;
-        match tokio::fs::remove_dir_all(self.root.join(instance_id)).await {
+        match fs_err::tokio::remove_dir_all(self.root.join(instance_id)).await {
             Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
             _ => Ok(()),
         }
@@ -381,12 +381,12 @@ impl Backups {
 
 fn restore_archive(archive: &Path, dir: &Path) -> Result<()> {
     let staging = dir.join(".relic-restore");
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)?;
+    let _ = fs_err::remove_dir_all(&staging);
+    fs_err::create_dir_all(&staging)?;
     let result = (|| -> Result<()> {
         // `unpack` refuses entries that would land outside `staging`.
         tar::Archive::new(zstd::Decoder::new(File::open(archive)?)?).unpack(&staging)?;
-        for entry in std::fs::read_dir(&staging)? {
+        for entry in fs_err::read_dir(&staging)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
                 continue;
@@ -396,23 +396,23 @@ fn restore_archive(archive: &Path, dir: &Path) -> Result<()> {
                 ".relic-old-{}",
                 entry.file_name().to_string_lossy()
             ));
-            let _ = std::fs::remove_dir_all(&old);
-            let had_live = match std::fs::rename(&live, &old) {
+            let _ = fs_err::remove_dir_all(&old);
+            let had_live = match fs_err::rename(&live, &old) {
                 Ok(()) => true,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
                 Err(err) => return Err(err.into()),
             };
-            if let Err(err) = std::fs::rename(entry.path(), &live) {
+            if let Err(err) = fs_err::rename(entry.path(), &live) {
                 if had_live {
-                    let _ = std::fs::rename(&old, &live);
+                    let _ = fs_err::rename(&old, &live);
                 }
                 return Err(err.into());
             }
-            let _ = std::fs::remove_dir_all(&old);
+            let _ = fs_err::remove_dir_all(&old);
         }
         Ok(())
     })();
-    let _ = std::fs::remove_dir_all(&staging);
+    let _ = fs_err::remove_dir_all(&staging);
     result
 }
 
@@ -467,21 +467,21 @@ mod tests {
             Err(Error::Conflict(_))
         ));
 
-        std::fs::create_dir_all(dir.join("world/region")).unwrap();
-        std::fs::write(dir.join("world/level.dat"), b"v1").unwrap();
-        std::fs::write(dir.join("world/region/r.0.0.mca"), b"chunks").unwrap();
-        std::fs::write(dir.join("world/session.lock"), b"lock").unwrap();
-        std::fs::write(dir.join("server.properties"), "level-name=world\n").unwrap();
+        fs_err::create_dir_all(dir.join("world/region")).unwrap();
+        fs_err::write(dir.join("world/level.dat"), b"v1").unwrap();
+        fs_err::write(dir.join("world/region/r.0.0.mca"), b"chunks").unwrap();
+        fs_err::write(dir.join("world/session.lock"), b"lock").unwrap();
+        fs_err::write(dir.join("server.properties"), "level-name=world\n").unwrap();
 
         let backup = backups.create("main").await.unwrap();
         assert_eq!(backups.list("main").await.unwrap(), vec![backup.clone()]);
 
-        std::fs::write(dir.join("world/level.dat"), b"v2").unwrap();
-        std::fs::write(dir.join("world/new-file"), b"x").unwrap();
+        fs_err::write(dir.join("world/level.dat"), b"v2").unwrap();
+        fs_err::write(dir.join("world/new-file"), b"x").unwrap();
         backups.restore("main", &backup.id).await.unwrap();
-        assert_eq!(std::fs::read(dir.join("world/level.dat")).unwrap(), b"v1");
+        assert_eq!(fs_err::read(dir.join("world/level.dat")).unwrap(), b"v1");
         assert_eq!(
-            std::fs::read(dir.join("world/region/r.0.0.mca")).unwrap(),
+            fs_err::read(dir.join("world/region/r.0.0.mca")).unwrap(),
             b"chunks"
         );
         assert!(!dir.join("world/new-file").exists());
@@ -492,7 +492,7 @@ mod tests {
         // Retention keeps the newest archives.
         let folder = tmp.path().join("backups/main");
         for id in ["100", "200", "300"] {
-            std::fs::copy(
+            fs_err::copy(
                 backups.path("main", &backup.id).unwrap(),
                 folder.join(format!("{id}.tar.zst")),
             )

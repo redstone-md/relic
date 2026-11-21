@@ -39,6 +39,7 @@ semver = "1.0.28"
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 include_dir = "0.7.4"
+fs-err = { version = "3.3.2", features = ["tokio"] }
 
 [dev-dependencies]
 fluent-syntax = "0.12.0"

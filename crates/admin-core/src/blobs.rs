@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use fs_err::tokio as fs;
 use sha2::{Digest, Sha256};
-use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -173,10 +173,7 @@ mod tests {
 
         let on_disk = fs::read(store.path(HELLO_SHA256).unwrap()).await.unwrap();
         assert_eq!(on_disk, b"hello");
-        assert_eq!(
-            std::fs::read_dir(dir.path().join("tmp")).unwrap().count(),
-            0
-        );
+        assert_eq!(fs_err::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
     }
 
     #[tokio::test]
@@ -187,10 +184,7 @@ mod tests {
         let err = store.put(&b"hello"[..], Some(4)).await.unwrap_err();
         assert!(matches!(err, Error::Invalid(_)));
         assert!(!store.exists(HELLO_SHA256).await.unwrap());
-        assert_eq!(
-            std::fs::read_dir(dir.path().join("tmp")).unwrap().count(),
-            0
-        );
+        assert_eq!(fs_err::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
     }
 
     #[tokio::test]

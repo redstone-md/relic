@@ -140,7 +140,7 @@ async fn run(launch: Launch, events: &UnboundedSender<Event>) -> Result<(), Erro
         .ok_or_else(|| Error::Other(t(Msg::InstanceNameUnusable).into()))?;
     let root = data_dir.join("game");
     let private = game_dir.join(PRIVATE_DIR);
-    tokio::fs::create_dir_all(&private).await?;
+    fs_err::tokio::create_dir_all(&private).await?;
 
     step(events, t(Msg::CheckingUpdates));
     let manifest = client.manifest(&instance.id).await?;
@@ -226,14 +226,14 @@ async fn run(launch: Launch, events: &UnboundedSender<Event>) -> Result<(), Erro
 
     step(events, t(Msg::StartingGame));
     let log_path = private.join("game.log");
-    let log = std::fs::File::create(&log_path)?;
+    let log = fs_err::File::create(&log_path)?;
     let mut command = Command::new(&prepared.java);
     // Java 9 and newer read arguments from a file, which keeps the access
     // token out of the process list and the command line short enough for
     // Windows.
     let args_file = private.join("launch.args");
     if prepared.java_major >= 9 {
-        tokio::fs::write(&args_file, client::argument_file(&args)).await?;
+        fs_err::tokio::write(&args_file, client::argument_file(&args)).await?;
         command.arg(format!("@{}", args_file.display()));
     } else {
         command.args(&args);
@@ -241,11 +241,13 @@ async fn run(launch: Launch, events: &UnboundedSender<Event>) -> Result<(), Erro
     command
         .current_dir(&game_dir)
         .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
+        .stdout(std::fs::File::from(log.try_clone()?))
+        .stderr(std::fs::File::from(log));
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let mut child = command.spawn()?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| relic_mc::process::spawn_error(&prepared.java, &game_dir, e))?;
     let _ = events.send(Event::Started);
 
     // The token in the arguments file is only needed while Java starts.
@@ -253,12 +255,12 @@ async fn run(launch: Launch, events: &UnboundedSender<Event>) -> Result<(), Erro
         let args_file = args_file.clone();
         async move {
             tokio::time::sleep(Duration::from_secs(30)).await;
-            let _ = tokio::fs::remove_file(args_file).await;
+            let _ = fs_err::tokio::remove_file(args_file).await;
         }
     });
     let status = child.wait().await?;
     cleanup.abort();
-    let _ = tokio::fs::remove_file(&args_file).await;
+    let _ = fs_err::tokio::remove_file(&args_file).await;
 
     let crashed = (!status.success()).then(|| {
         let log = log_path.display();

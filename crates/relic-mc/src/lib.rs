@@ -9,6 +9,7 @@ pub mod http;
 pub mod java;
 pub mod loaders;
 pub mod mojang;
+pub mod process;
 pub mod profile;
 pub mod server;
 

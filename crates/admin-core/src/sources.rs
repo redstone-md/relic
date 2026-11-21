@@ -401,7 +401,7 @@ struct Override {
 /// Reads the index and unpacks the override trees into `scratch`.
 fn open_mrpack(archive: &Path, scratch: &Path) -> Result<(MrpackIndex, Vec<Override>)> {
     let bad = |e: zip::result::ZipError| Error::invalid(format!("not a valid .mrpack: {e}"));
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?).map_err(bad)?;
+    let mut zip = zip::ZipArchive::new(fs_err::File::open(archive)?).map_err(bad)?;
     if zip.len() > MRPACK_MAX_ENTRIES {
         return Err(Error::invalid("the .mrpack has too many entries"));
     }
@@ -442,7 +442,7 @@ fn open_mrpack(archive: &Path, scratch: &Path) -> Result<(MrpackIndex, Vec<Overr
             return Err(Error::invalid("the .mrpack unpacks to more than 2 GiB"));
         }
         let file = scratch.join(format!("o{i}"));
-        let mut out = std::fs::File::create(&file)?;
+        let mut out = fs_err::File::create(&file)?;
         // `size()` is only a claim; cap what is actually written.
         let written = std::io::copy(&mut (&mut entry).take(MRPACK_MAX_UNPACKED), &mut out)?;
         if written > entry.size() {
@@ -677,7 +677,7 @@ impl Sources {
         if https_host(&file.url).as_deref() != Some("cdn.modrinth.com") {
             return Err(Error::Upstream("unexpected download host".into()));
         }
-        tokio::fs::create_dir_all(&self.tmp).await?;
+        fs_err::tokio::create_dir_all(&self.tmp).await?;
         let scratch = self.tmp.join(format!("pack-{}.mrpack", Uuid::new_v4()));
         let result = async {
             http::download(
@@ -691,7 +691,7 @@ impl Sources {
             self.import_mrpack(&instance.id, &scratch).await
         }
         .await;
-        let _ = tokio::fs::remove_file(&scratch).await;
+        let _ = fs_err::tokio::remove_file(&scratch).await;
         result
     }
 
@@ -802,19 +802,19 @@ impl Sources {
         checksum: Checksum,
         hints: FileHints,
     ) -> Result<FileRecord> {
-        tokio::fs::create_dir_all(&self.tmp).await?;
+        fs_err::tokio::create_dir_all(&self.tmp).await?;
         let scratch = self.tmp.join(format!("dl-{}", Uuid::new_v4()));
         let result = async {
             http::download(&self.http, source, &scratch, &checksum)
                 .await
                 .map_err(upstream)?;
-            let file = tokio::fs::File::open(&scratch).await?;
+            let file = fs_err::tokio::File::open(&scratch).await?;
             self.modpack
                 .add_file(instance_id, path, file, None, hints)
                 .await
         }
         .await;
-        let _ = tokio::fs::remove_file(&scratch).await;
+        let _ = fs_err::tokio::remove_file(&scratch).await;
         result
     }
 
@@ -956,9 +956,9 @@ impl Sources {
     pub async fn import_mrpack(&self, instance_id: &str, archive: &Path) -> Result<MrpackReport> {
         let instance = instances::get(self.modpack.db(), instance_id).await?;
         let scratch = self.tmp.join(format!("mrpack-{}", Uuid::new_v4()));
-        tokio::fs::create_dir_all(&scratch).await?;
+        fs_err::tokio::create_dir_all(&scratch).await?;
         let result = self.import_mrpack_in(&instance, archive, &scratch).await;
-        let _ = tokio::fs::remove_dir_all(&scratch).await;
+        let _ = fs_err::tokio::remove_dir_all(&scratch).await;
         result
     }
 
@@ -1035,7 +1035,7 @@ impl Sources {
                 side: Some(item.side),
                 optional: None,
             };
-            let file = tokio::fs::File::open(&item.file).await?;
+            let file = fs_err::tokio::File::open(&item.file).await?;
             match self
                 .modpack
                 .add_file(&instance.id, &item.path, file, None, hints)
@@ -1114,7 +1114,7 @@ mod tests {
         let sources = Sources::new(http::client(), modpack.clone(), tmp.path().join("tmp"));
 
         let archive = tmp.path().join("pack.mrpack");
-        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let mut zip = zip::ZipWriter::new(fs_err::File::create(&archive).unwrap());
         let options = zip::write::SimpleFileOptions::default();
         zip.start_file("modrinth.index.json", options).unwrap();
         zip.write_all(
@@ -1154,9 +1154,6 @@ mod tests {
             ]
         );
         // Scratch space is cleaned up.
-        assert_eq!(
-            std::fs::read_dir(tmp.path().join("tmp")).unwrap().count(),
-            0
-        );
+        assert_eq!(fs_err::read_dir(tmp.path().join("tmp")).unwrap().count(), 0);
     }
 }

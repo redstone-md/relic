@@ -7,8 +7,8 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use fs_err::tokio as fs;
 use serde::Serialize;
-use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -78,7 +78,7 @@ async fn resolve(root: &Path, relative: &str) -> Result<PathBuf> {
 }
 
 fn is_root(root: &Path, path: &Path) -> bool {
-    std::fs::canonicalize(root).is_ok_and(|root| root == path)
+    fs_err::canonicalize(root).is_ok_and(|root| root == path)
 }
 
 pub async fn list(root: &Path, relative: &str) -> Result<Vec<Entry>> {
@@ -270,13 +270,13 @@ pub struct Share {
 
 /// The bytes under `path`. Links are counted as links, not followed.
 fn weigh(path: &Path) -> u64 {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
+    let Ok(meta) = fs_err::symlink_metadata(path) else {
         return 0;
     };
     if !meta.is_dir() {
         return if meta.is_file() { meta.len() } else { 0 };
     }
-    let Ok(reader) = std::fs::read_dir(path) else {
+    let Ok(reader) = fs_err::read_dir(path) else {
         return 0;
     };
     reader.flatten().map(|entry| weigh(&entry.path())).sum()
@@ -288,12 +288,12 @@ pub async fn usage(root: &Path) -> Result<Usage> {
     tokio::task::spawn_blocking(move || {
         let mut folders = Vec::new();
         let mut loose = 0u64;
-        for entry in std::fs::read_dir(&root)?.flatten() {
+        for entry in fs_err::read_dir(&root)?.flatten() {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
             let path = entry.path();
-            let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
+            let is_dir = fs_err::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
             let size = weigh(&path);
             if is_dir {
                 folders.push(Share { name, size });
@@ -332,18 +332,18 @@ pub async fn archive(root: &Path, relative: &str, dest: &Path) -> Result<String>
     let (dest, top) = (dest.to_owned(), name.clone());
     tokio::task::spawn_blocking(move || -> Result<()> {
         use zip::write::SimpleFileOptions;
-        let mut writer = zip::ZipWriter::new(std::fs::File::create(&dest)?);
+        let mut writer = zip::ZipWriter::new(fs_err::File::create(&dest)?);
         let mut pending = vec![(dir, top)];
         while let Some((dir, prefix)) = pending.pop() {
             writer
                 .add_directory(format!("{prefix}/"), SimpleFileOptions::default())
                 .map_err(zip_error)?;
-            for entry in std::fs::read_dir(&dir)?.flatten() {
+            for entry in fs_err::read_dir(&dir)?.flatten() {
                 let Ok(name) = entry.file_name().into_string() else {
                     continue;
                 };
                 let path = entry.path();
-                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                let Ok(meta) = fs_err::symlink_metadata(&path) else {
                     continue;
                 };
                 let inner = format!("{prefix}/{name}");
@@ -351,7 +351,7 @@ pub async fn archive(root: &Path, relative: &str, dest: &Path) -> Result<String>
                     pending.push((path, inner));
                 } else if meta.is_file() {
                     // A running server keeps `session.lock` to itself.
-                    let Ok(mut file) = std::fs::File::open(&path) else {
+                    let Ok(mut file) = fs_err::File::open(&path) else {
                         continue;
                     };
                     let options =
@@ -393,7 +393,7 @@ pub async fn unpack(root: &Path, relative: &str, archive: &Path) -> Result<usize
     let archive = archive.to_owned();
     let made = target.clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<usize> {
-        let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive)?)
+        let mut zip = zip::ZipArchive::new(fs_err::File::open(&archive)?)
             .map_err(|_| Error::invalid("this is not a zip archive"))?;
         if zip.len() > UNPACK_MAX_ENTRIES {
             return Err(Error::invalid("the archive holds too many files"));
@@ -418,7 +418,7 @@ pub async fn unpack(root: &Path, relative: &str, archive: &Path) -> Result<usize
         });
         let mut written = 0usize;
         let mut bytes = 0u64;
-        std::fs::create_dir_all(&target)?;
+        fs_err::create_dir_all(&target)?;
         for (i, (name, dir)) in names.iter().enumerate() {
             let inner = match (&top, wrapped) {
                 (Some(top), true) => name.strip_prefix(top).unwrap_or(name),
@@ -429,15 +429,15 @@ pub async fn unpack(root: &Path, relative: &str, archive: &Path) -> Result<usize
             }
             let dest = target.join(inner);
             if *dir {
-                std::fs::create_dir_all(&dest)?;
+                fs_err::create_dir_all(&dest)?;
                 continue;
             }
             if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
+                fs_err::create_dir_all(parent)?;
             }
             let entry = zip.by_index(i).map_err(zip_error)?;
             let room = UNPACK_MAX_BYTES - bytes;
-            let mut out = std::fs::File::create(&dest)?;
+            let mut out = fs_err::File::create(&dest)?;
             // The size in the header is only a claim; count what comes out.
             let copied = std::io::copy(&mut std::io::Read::take(entry, room + 1), &mut out)?;
             if copied > room {
@@ -520,7 +520,7 @@ mod tests {
         // The one top folder of the archive is not repeated.
         assert_eq!(unpack(&root, "copy", &packed).await.unwrap(), 2);
         let level = file(&root, "copy/level.dat").await.unwrap();
-        assert_eq!(std::fs::read(level).unwrap(), b"level");
+        assert_eq!(fs_err::read(level).unwrap(), b"level");
         assert!(file(&root, "copy/region/r.0.0.mca").await.is_ok());
         assert!(matches!(
             unpack(&root, "copy", &packed).await,
@@ -552,7 +552,7 @@ mod tests {
         assert!(!root.join("world").exists());
 
         let not_zip = dir.path().join("x.zip");
-        std::fs::write(&not_zip, b"nope").unwrap();
+        fs_err::write(&not_zip, b"nope").unwrap();
         assert!(unpack(&root, "world", &not_zip).await.is_err());
     }
 
@@ -584,7 +584,7 @@ mod tests {
 
         write(root, "config/a.txt", &b"two"[..], 100).await.unwrap();
         let path = file(root, "config/a.txt").await.unwrap();
-        assert_eq!(std::fs::read(path).unwrap(), b"two");
+        assert_eq!(fs_err::read(path).unwrap(), b"two");
         assert_eq!(names(root, "config").await, ["a.txt"], "no temp files left");
 
         rename(root, "config/a.txt", "world/b.txt").await.unwrap();
@@ -604,8 +604,8 @@ mod tests {
     async fn refuses_paths_that_leave_the_instance() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("instance");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(dir.path().join("secret.txt"), b"s").unwrap();
+        fs_err::create_dir(&root).unwrap();
+        fs_err::write(dir.path().join("secret.txt"), b"s").unwrap();
 
         for path in ["../secret.txt", "a/../../secret.txt", "C:/Windows", "..\\x"] {
             assert!(file(&root, path).await.is_err(), "{path}");
@@ -628,9 +628,9 @@ mod tests {
     async fn does_not_follow_links_out_of_the_instance() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("instance");
-        std::fs::create_dir(&root).unwrap();
+        fs_err::create_dir(&root).unwrap();
         let outside = dir.path().join("outside");
-        std::fs::create_dir(&outside).unwrap();
+        fs_err::create_dir(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
 
         assert!(list(&root, "link").await.is_err());

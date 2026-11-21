@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use tokio::fs;
+use fs_err::tokio as fs;
 
 use crate::error::Result;
 use crate::modpack::Modpack;
@@ -182,11 +182,11 @@ mod tests {
         assert!(!dir.join("config/client.toml").exists());
 
         // The server edits a config and creates a file of its own.
-        std::fs::write(dir.join("config/a.toml"), b"a = 2").unwrap();
-        std::fs::write(dir.join("config/generated.toml"), b"g").unwrap();
+        fs_err::write(dir.join("config/a.toml"), b"a = 2").unwrap();
+        fs_err::write(dir.join("config/generated.toml"), b"g").unwrap();
         let report = deploy(&modpack, "main", &dir).await.unwrap();
         assert_eq!(report, DeployReport::default());
-        assert_eq!(std::fs::read(dir.join("config/a.toml")).unwrap(), b"a = 2");
+        assert_eq!(fs_err::read(dir.join("config/a.toml")).unwrap(), b"a = 2");
 
         // A new pack version of the file wins over the local edit.
         add(&modpack, "config/a.toml", b"a = 3", Side::Both).await;
@@ -196,22 +196,22 @@ mod tests {
             .unwrap();
         let report = deploy(&modpack, "main", &dir).await.unwrap();
         assert_eq!((report.written, report.removed), (1, 1));
-        assert_eq!(std::fs::read(dir.join("config/a.toml")).unwrap(), b"a = 3");
+        assert_eq!(fs_err::read(dir.join("config/a.toml")).unwrap(), b"a = 3");
         assert!(!dir.join("config/server.toml").exists());
         assert!(dir.join("config/generated.toml").is_file());
 
         // Copied configs must not alias the blob store.
-        std::fs::write(dir.join("config/a.toml"), b"scribble").unwrap();
+        fs_err::write(dir.join("config/a.toml"), b"scribble").unwrap();
         let file = modpack.get_file("main", "config/a.toml").await.unwrap();
         let blob = modpack.blobs().path(&file.sha256).unwrap();
-        assert_eq!(std::fs::read(blob).unwrap(), b"a = 3");
+        assert_eq!(fs_err::read(blob).unwrap(), b"a = 3");
     }
 
     #[tokio::test]
     async fn properties_are_updated_in_place() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("server.properties");
-        std::fs::write(
+        fs_err::write(
             &path,
             "#Minecraft server properties\nmotd=Hi\nserver-port=25565\n",
         )
@@ -226,7 +226,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
+            fs_err::read_to_string(&path).unwrap(),
             "#Minecraft server properties\nmotd=Hi\nserver-port=25570\nonline-mode=true\n"
         );
         assert_eq!(get_property(&path, "motd").await.as_deref(), Some("Hi"));

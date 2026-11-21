@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use fs_err::tokio as fs;
 use sha2::{Digest, Sha256};
-use tokio::fs;
 
 use crate::error::{Error, Result};
 
@@ -113,7 +113,7 @@ mod tests {
         assert!(name.ends_with(".png"));
         assert_eq!(put(dir.path(), &png).await.unwrap(), name);
         assert_eq!(
-            std::fs::read(path(dir.path(), &name).await.unwrap()).unwrap(),
+            fs_err::read(path(dir.path(), &name).await.unwrap()).unwrap(),
             png
         );
         assert_eq!(mime(&name), "image/png");
