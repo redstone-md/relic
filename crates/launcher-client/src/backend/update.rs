@@ -173,7 +173,7 @@ pub async fn install(update: &Update, data_dir: &Path) -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs_err::set_permissions(&staged, fs_err::Permissions::from_mode(0o755))?;
+            fs_err::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
         }
         let replaced = self_replace::self_replace(&staged);
         let _ = fs_err::remove_file(&staged);
