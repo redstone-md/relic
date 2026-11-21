@@ -444,7 +444,12 @@ pub async fn import_mrpack(
     instances::get(&app.db, &id).await?;
     let scratch = Scratch(app.tmp.join(format!("{}.mrpack", uuid::Uuid::new_v4())));
     save_body(body, scratch.0.clone(), MAX_MRPACK).await?;
-    Ok(Json(app.sources.import_mrpack(&id, &scratch.0).await?))
+    let key = curseforge_key(&app).await?;
+    Ok(Json(
+        app.sources
+            .import_pack(&id, &scratch.0, key.as_deref())
+            .await?,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -476,8 +481,14 @@ pub async fn search_mods(
     Ok(Json(hits))
 }
 
+fn modrinth() -> Provider {
+    Provider::Modrinth
+}
+
 #[derive(Deserialize)]
 pub struct PacksQuery {
+    #[serde(default = "modrinth")]
+    provider: Provider,
     #[serde(default)]
     q: String,
     category: Option<String>,
@@ -490,13 +501,16 @@ pub async fn search_packs(
     Query(query): Query<PacksQuery>,
 ) -> Result<Json<Vec<PackHit>>> {
     let instance = instances::get(&app.db, &id).await?;
+    let key = curseforge_key(&app).await?;
     let hits = app
         .sources
         .packs(
+            query.provider,
             &instance,
             &query.q,
             query.category.as_deref(),
             query.sort.as_deref(),
+            key.as_deref(),
         )
         .await?;
     Ok(Json(hits))
@@ -504,6 +518,8 @@ pub async fn search_packs(
 
 #[derive(Deserialize)]
 pub struct InstallPack {
+    #[serde(default = "modrinth")]
+    provider: Provider,
     project: String,
 }
 
@@ -513,8 +529,11 @@ pub async fn install_pack(
     Json(body): Json<InstallPack>,
 ) -> Result<Json<MrpackReport>> {
     let instance = instances::get(&app.db, &id).await?;
+    let key = curseforge_key(&app).await?;
     Ok(Json(
-        app.sources.install_pack(&instance, &body.project).await?,
+        app.sources
+            .install_pack(body.provider, &instance, &body.project, key.as_deref())
+            .await?,
     ))
 }
 

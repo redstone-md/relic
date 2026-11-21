@@ -1,6 +1,7 @@
 //! Where mods come from besides manual upload: Modrinth, CurseForge and
-//! `.mrpack` archives.
+//! modpack archives of either catalogue.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,9 @@ const MODRINTH: &str = "https://api.modrinth.com/v2";
 const CURSEFORGE: &str = "https://api.curseforge.com/v1";
 const CURSEFORGE_MINECRAFT: &str = "432";
 const CURSEFORGE_MODS_CLASS: &str = "6";
+const CURSEFORGE_PACKS_CLASS: &str = "4471";
+/// CurseForge answers at most this many items per request.
+const CURSEFORGE_BATCH: usize = 50;
 /// Hosts a `.mrpack` may download from, per the format specification.
 const MRPACK_HOSTS: [&str; 4] = [
     "cdn.modrinth.com",
@@ -53,9 +57,10 @@ pub struct SearchHit {
     pub distributable: bool,
 }
 
-/// A ready-made modpack in the Modrinth catalogue.
+/// A ready-made modpack in a catalogue.
 #[derive(Debug, Clone, Serialize)]
 pub struct PackHit {
+    pub provider: Provider,
     pub id: String,
     pub title: String,
     pub description: String,
@@ -189,6 +194,27 @@ fn mod_path(filename: &str) -> Result<String> {
     normalize_path(&format!("mods/{name}"))
 }
 
+fn curseforge_host(url: &str) -> bool {
+    https_host(url).is_some_and(|h| h == "forgecdn.net" || h.ends_with(".forgecdn.net"))
+}
+
+fn curseforge_checksum(file: &CfFile) -> Checksum {
+    file.hashes
+        .iter()
+        .find(|h| h.algo == 1)
+        .map_or(Checksum::None, |h| Checksum::Sha1(h.value.clone()))
+}
+
+/// CurseForge tags a file `Client` or `Server` when it runs on one side only.
+fn curseforge_side(file: &CfFile) -> Option<Side> {
+    let has = |tag: &str| file.game_versions.iter().any(|v| v == tag);
+    match (has("Client"), has("Server")) {
+        (true, false) => Some(Side::Client),
+        (false, true) => Some(Side::Server),
+        _ => None,
+    }
+}
+
 fn https_host(raw: &str) -> Option<String> {
     let url = Url::parse(raw).ok()?;
     (url.scheme() == "https").then(|| url.host_str().map(str::to_owned))?
@@ -296,6 +322,10 @@ struct CfMod {
     logo: Option<CfLogo>,
     links: Option<CfLinks>,
     allow_mod_distribution: Option<bool>,
+    #[serde(default)]
+    class_id: Option<u64>,
+    #[serde(default)]
+    screenshots: Vec<CfScreenshot>,
 }
 
 #[derive(Deserialize)]
@@ -307,6 +337,12 @@ struct CfAuthor {
 #[serde(rename_all = "camelCase")]
 struct CfLogo {
     thumbnail_url: Option<String>,
+    url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CfScreenshot {
+    url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -398,23 +434,144 @@ struct Override {
     file: PathBuf,
 }
 
-/// Reads the index and unpacks the override trees into `scratch`.
-fn open_mrpack(archive: &Path, scratch: &Path) -> Result<(MrpackIndex, Vec<Override>)> {
-    let bad = |e: zip::result::ZipError| Error::invalid(format!("not a valid .mrpack: {e}"));
+// ---- CurseForge modpack wire types ----
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CfManifest {
+    #[serde(default)]
+    manifest_type: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+    minecraft: CfManifestGame,
+    #[serde(default)]
+    files: Vec<CfManifestFile>,
+    #[serde(default)]
+    overrides: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CfManifestGame {
+    version: String,
+    #[serde(default)]
+    mod_loaders: Vec<CfManifestLoader>,
+}
+
+#[derive(Deserialize)]
+struct CfManifestLoader {
+    id: String,
+    #[serde(default)]
+    primary: bool,
+}
+
+#[derive(Deserialize)]
+struct CfManifestFile {
+    #[serde(rename = "projectID")]
+    project_id: u64,
+    #[serde(rename = "fileID")]
+    file_id: u64,
+    #[serde(default = "yes")]
+    required: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl CfManifest {
+    /// `forge-14.23.5.2860`, `fabric-0.16.9`, `neoforge-21.1.90`.
+    fn loader(&self) -> Option<Loader> {
+        let loaders = &self.minecraft.mod_loaders;
+        let chosen = loaders.iter().find(|l| l.primary).or(loaders.first())?;
+        let (name, version) = chosen.id.split_once('-')?;
+        let kind = match name {
+            "forge" => LoaderKind::Forge,
+            "neoforge" => LoaderKind::NeoForge,
+            "fabric" => LoaderKind::Fabric,
+            "quilt" => LoaderKind::Quilt,
+            _ => return None,
+        };
+        Some(Loader {
+            kind,
+            version: version.to_owned(),
+        })
+    }
+}
+
+/// Where a CurseForge project's files belong, by its class, and whether the
+/// server has any use for them.
+fn curseforge_folder(class: Option<u64>, file_name: &str) -> Option<(&'static str, Option<Side>)> {
+    match class {
+        Some(6) => Some(("mods", None)),
+        Some(12) => Some(("resourcepacks", Some(Side::Client))),
+        Some(6552) => Some(("shaderpacks", Some(Side::Client))),
+        Some(_) => None,
+        None => file_name
+            .to_ascii_lowercase()
+            .ends_with(".jar")
+            .then_some(("mods", None)),
+    }
+}
+
+/// A modpack archive of either catalogue.
+enum PackArchive {
+    Modrinth(MrpackIndex),
+    Curseforge(CfManifest),
+}
+
+/// Reads the pack's description and unpacks its override trees into
+/// `scratch`.
+fn open_pack(archive: &Path, scratch: &Path) -> Result<(PackArchive, Vec<Override>)> {
+    let bad =
+        |e: zip::result::ZipError| Error::invalid(format!("not a valid modpack archive: {e}"));
     let mut zip = zip::ZipArchive::new(fs_err::File::open(archive)?).map_err(bad)?;
     if zip.len() > MRPACK_MAX_ENTRIES {
-        return Err(Error::invalid("the .mrpack has too many entries"));
+        return Err(Error::invalid("the modpack archive has too many entries"));
     }
-    let index: MrpackIndex = {
-        let entry = zip
-            .by_name("modrinth.index.json")
-            .map_err(|_| Error::invalid("the archive has no modrinth.index.json"))?;
-        serde_json::from_reader(entry.take(16 * 1024 * 1024))
-            .map_err(|e| Error::invalid(format!("unreadable modrinth.index.json: {e}")))?
+    let names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+    let has = |name: &str| names.iter().any(|n| n == name);
+    let pack = if has("modrinth.index.json") {
+        let entry = zip.by_name("modrinth.index.json").map_err(bad)?;
+        let index: MrpackIndex = serde_json::from_reader(entry.take(16 * 1024 * 1024))
+            .map_err(|e| Error::invalid(format!("unreadable modrinth.index.json: {e}")))?;
+        if index.format_version != 1 || index.game != "minecraft" {
+            return Err(Error::invalid("unsupported .mrpack format"));
+        }
+        PackArchive::Modrinth(index)
+    } else if has("manifest.json") {
+        let entry = zip.by_name("manifest.json").map_err(bad)?;
+        let manifest: CfManifest = serde_json::from_reader(entry.take(16 * 1024 * 1024))
+            .map_err(|e| Error::invalid(format!("unreadable manifest.json: {e}")))?;
+        if manifest.manifest_type != "minecraftModpack" {
+            return Err(Error::invalid("manifest.json does not describe a modpack"));
+        }
+        PackArchive::Curseforge(manifest)
+    } else {
+        return Err(Error::invalid(
+            "the archive has neither modrinth.index.json nor manifest.json; \
+             it is not a Modrinth or CurseForge modpack",
+        ));
     };
-    if index.format_version != 1 || index.game != "minecraft" {
-        return Err(Error::invalid("unsupported .mrpack format"));
-    }
+
+    // Later trees win over `overrides/`; the client tree is not ours to run.
+    let trees: Vec<(String, Side)> = match &pack {
+        PackArchive::Modrinth(_) => vec![
+            ("overrides/".to_owned(), Side::Both),
+            ("server-overrides/".to_owned(), Side::Server),
+            ("client-overrides/".to_owned(), Side::Client),
+        ],
+        PackArchive::Curseforge(manifest) => {
+            let folder = manifest.overrides.trim_matches('/');
+            if folder.is_empty() {
+                Vec::new()
+            } else {
+                vec![(format!("{folder}/"), Side::Both)]
+            }
+        }
+    };
 
     let mut overrides = Vec::new();
     let mut unpacked = 0u64;
@@ -424,14 +581,9 @@ fn open_mrpack(archive: &Path, scratch: &Path) -> Result<(MrpackIndex, Vec<Overr
             continue;
         }
         let name = entry.name().replace('\\', "/");
-        // Later trees win over `overrides/`; the client tree is not ours to run.
-        let (side, rest) = if let Some(rest) = name.strip_prefix("overrides/") {
-            (Side::Both, rest)
-        } else if let Some(rest) = name.strip_prefix("server-overrides/") {
-            (Side::Server, rest)
-        } else if let Some(rest) = name.strip_prefix("client-overrides/") {
-            (Side::Client, rest)
-        } else {
+        let Some((side, rest)) = trees.iter().find_map(|(prefix, side)| {
+            name.strip_prefix(prefix.as_str()).map(|rest| (*side, rest))
+        }) else {
             continue;
         };
         let Ok(path) = normalize_path(rest) else {
@@ -439,18 +591,20 @@ fn open_mrpack(archive: &Path, scratch: &Path) -> Result<(MrpackIndex, Vec<Overr
         };
         unpacked += entry.size();
         if unpacked > MRPACK_MAX_UNPACKED {
-            return Err(Error::invalid("the .mrpack unpacks to more than 2 GiB"));
+            return Err(Error::invalid("the modpack unpacks to more than 2 GiB"));
         }
         let file = scratch.join(format!("o{i}"));
         let mut out = fs_err::File::create(&file)?;
         // `size()` is only a claim; cap what is actually written.
         let written = std::io::copy(&mut (&mut entry).take(MRPACK_MAX_UNPACKED), &mut out)?;
         if written > entry.size() {
-            return Err(Error::invalid("the .mrpack lies about its entry sizes"));
+            return Err(Error::invalid(
+                "the modpack archive lies about its entry sizes",
+            ));
         }
         overrides.push(Override { path, side, file });
     }
-    Ok((index, overrides))
+    Ok((pack, overrides))
 }
 
 impl MrpackIndex {
@@ -495,6 +649,37 @@ impl Sources {
             status => return Err(Error::Upstream(format!("catalogue answered HTTP {status}"))),
         }
         response.json().await.map_err(|e| upstream(e.without_url()))
+    }
+
+    /// CurseForge looks up several mods or files with a POST.
+    async fn curseforge_lookup<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        key: &str,
+    ) -> Result<T> {
+        let response = self
+            .http
+            .post(format!("{CURSEFORGE}{path}"))
+            .header("x-api-key", key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| upstream(e.without_url()))?;
+        match response.status().as_u16() {
+            200..=299 => {}
+            401 | 403 => return Err(Error::Upstream("CurseForge rejected the API key".into())),
+            status => {
+                return Err(Error::Upstream(format!(
+                    "CurseForge answered HTTP {status}"
+                )));
+            }
+        }
+        let found: CfEnvelope<T> = response
+            .json()
+            .await
+            .map_err(|e| upstream(e.without_url()))?;
+        Ok(found.data)
     }
 
     fn curseforge_key(key: Option<&str>) -> Result<&str> {
@@ -594,11 +779,17 @@ impl Sources {
     /// Modpacks made for the instance's game version and loader.
     pub async fn packs(
         &self,
+        provider: Provider,
         instance: &Instance,
         query: &str,
         category: Option<&str>,
         sort: Option<&str>,
+        curseforge_key: Option<&str>,
     ) -> Result<Vec<PackHit>> {
+        if provider == Provider::Curseforge {
+            let key = Self::curseforge_key(curseforge_key)?;
+            return self.curseforge_packs(instance, query, sort, key).await;
+        }
         let loaders: Vec<String> = compatible_loaders(instance)?
             .iter()
             .map(|l| format!("categories:{}", l.as_str()))
@@ -635,6 +826,7 @@ impl Sources {
             .hits
             .into_iter()
             .map(|hit| PackHit {
+                provider: Provider::Modrinth,
                 page_url: format!("https://modrinth.com/modpack/{}", hit.slug),
                 id: hit.project_id,
                 title: hit.title,
@@ -655,9 +847,83 @@ impl Sources {
             .collect())
     }
 
+    /// CurseForge modpacks for the instance's game version. The loader is
+    /// not part of the query: older packs are not tagged with one, and the
+    /// import says so when a pack was made for another loader.
+    async fn curseforge_packs(
+        &self,
+        instance: &Instance,
+        query: &str,
+        sort: Option<&str>,
+        key: &str,
+    ) -> Result<Vec<PackHit>> {
+        compatible_loaders(instance)?;
+        let sort = match sort {
+            Some("updated") => "3",
+            Some("downloads") => "6",
+            // Popularity; with a search term CurseForge still ranks matches first.
+            _ => "2",
+        };
+        let url = url(
+            CURSEFORGE,
+            "/mods/search",
+            &[
+                ("gameId", CURSEFORGE_MINECRAFT),
+                ("classId", CURSEFORGE_PACKS_CLASS),
+                ("searchFilter", query),
+                ("gameVersion", &instance.minecraft_version),
+                ("sortField", sort),
+                ("sortOrder", "desc"),
+                ("pageSize", "30"),
+            ],
+        )?;
+        let found: CfEnvelope<Vec<CfMod>> = self.fetch(url, Some(key)).await?;
+        let picture = |url: String| https_host(&url).is_some().then_some(url);
+        Ok(found
+            .data
+            .into_iter()
+            .map(|item| PackHit {
+                provider: Provider::Curseforge,
+                id: item.id.to_string(),
+                title: item.name,
+                description: item.summary,
+                author: item
+                    .authors
+                    .into_iter()
+                    .next()
+                    .map(|a| a.name)
+                    .unwrap_or_default(),
+                cover_url: item
+                    .screenshots
+                    .into_iter()
+                    .find_map(|s| s.url)
+                    .or_else(|| item.logo.as_ref().and_then(|l| l.url.clone()))
+                    .and_then(picture),
+                icon_url: item.logo.and_then(|l| l.thumbnail_url).and_then(picture),
+                page_url: item
+                    .links
+                    .and_then(|l| l.website_url)
+                    .filter(|u| u.starts_with("https://"))
+                    .unwrap_or_else(|| "https://www.curseforge.com/minecraft/modpacks".into()),
+                downloads: item.download_count.max(0.0) as u64,
+                categories: Vec::new(),
+            })
+            .collect())
+    }
+
     /// Downloads the newest build of a catalogue modpack that fits the
     /// instance and adds what it describes to the instance's pack.
-    pub async fn install_pack(&self, instance: &Instance, project: &str) -> Result<MrpackReport> {
+    pub async fn install_pack(
+        &self,
+        provider: Provider,
+        instance: &Instance,
+        project: &str,
+        curseforge_key: Option<&str>,
+    ) -> Result<MrpackReport> {
+        if provider == Provider::Curseforge {
+            let key = Self::curseforge_key(curseforge_key)?;
+            return self.install_curseforge_pack(instance, project, key).await;
+        }
         let versions = self.modrinth_versions(instance, project).await?;
         let chosen = versions
             .first()
@@ -688,7 +954,56 @@ impl Sources {
             )
             .await
             .map_err(upstream)?;
-            self.import_mrpack(&instance.id, &scratch).await
+            self.import_pack(&instance.id, &scratch, curseforge_key)
+                .await
+        }
+        .await;
+        let _ = fs_err::tokio::remove_file(&scratch).await;
+        result
+    }
+
+    async fn install_curseforge_pack(
+        &self,
+        instance: &Instance,
+        project: &str,
+        key: &str,
+    ) -> Result<MrpackReport> {
+        check_id(project)?;
+        let url = url(
+            CURSEFORGE,
+            &format!("/mods/{project}/files"),
+            &[
+                ("gameVersion", instance.minecraft_version.as_str()),
+                ("pageSize", "30"),
+            ],
+        )?;
+        let files: CfEnvelope<Vec<CfFile>> = self.fetch(url, Some(key)).await?;
+        // Server packs are listed next to the pack itself and carry no manifest.
+        let chosen = files
+            .data
+            .iter()
+            .find(|f| {
+                let name = f.file_name.to_ascii_lowercase();
+                name.ends_with(".zip") && !name.contains("server")
+            })
+            .ok_or(Error::NotFound("a build of this modpack for the instance"))?;
+        let Some(source) = chosen.download_url.as_deref() else {
+            return Err(Error::Forbidden(
+                "the author does not allow third-party downloads of this modpack; \
+                 download its zip from CurseForge in a browser and import the file"
+                    .into(),
+            ));
+        };
+        if !curseforge_host(source) {
+            return Err(Error::Upstream("unexpected download host".into()));
+        }
+        fs_err::tokio::create_dir_all(&self.tmp).await?;
+        let scratch = self.tmp.join(format!("pack-{}.zip", Uuid::new_v4()));
+        let result = async {
+            http::download(&self.http, source, &scratch, &curseforge_checksum(chosen))
+                .await
+                .map_err(upstream)?;
+            self.import_pack(&instance.id, &scratch, Some(key)).await
         }
         .await;
         let _ = fs_err::tokio::remove_file(&scratch).await;
@@ -951,29 +1266,198 @@ impl Sources {
         }
     }
 
-    /// Adds everything a `.mrpack` describes to the instance's pack. Files
-    /// that fail to download are reported, the rest still lands.
-    pub async fn import_mrpack(&self, instance_id: &str, archive: &Path) -> Result<MrpackReport> {
+    /// Adds everything a modpack archive describes to the instance's pack:
+    /// a Modrinth `.mrpack` or a CurseForge zip. Files that fail to download
+    /// are reported, the rest still lands.
+    pub async fn import_pack(
+        &self,
+        instance_id: &str,
+        archive: &Path,
+        curseforge_key: Option<&str>,
+    ) -> Result<MrpackReport> {
         let instance = instances::get(self.modpack.db(), instance_id).await?;
-        let scratch = self.tmp.join(format!("mrpack-{}", Uuid::new_v4()));
+        let scratch = self.tmp.join(format!("pack-{}", Uuid::new_v4()));
         fs_err::tokio::create_dir_all(&scratch).await?;
-        let result = self.import_mrpack_in(&instance, archive, &scratch).await;
+        let result = async {
+            let (pack, overrides) = {
+                let (archive, scratch) = (archive.to_owned(), scratch.clone());
+                tokio::task::spawn_blocking(move || open_pack(&archive, &scratch))
+                    .await
+                    .map_err(|e| Error::Other(e.into()))??
+            };
+            let mut report = match pack {
+                PackArchive::Modrinth(index) => self.import_mrpack_files(&instance, index).await?,
+                PackArchive::Curseforge(manifest) => {
+                    let key = Self::curseforge_key(curseforge_key)?;
+                    self.import_curseforge_files(&instance, manifest, key)
+                        .await?
+                }
+            };
+            self.import_overrides(&instance, overrides, &mut report)
+                .await?;
+            report.failed.sort_by(|a, b| a.path.cmp(&b.path));
+            Ok(report)
+        }
+        .await;
         let _ = fs_err::tokio::remove_dir_all(&scratch).await;
         result
     }
 
-    async fn import_mrpack_in(
+    /// Resolves the files a CurseForge manifest lists and downloads those
+    /// the authors let third-party tools fetch.
+    async fn import_curseforge_files(
         &self,
         instance: &Instance,
-        archive: &Path,
-        scratch: &Path,
+        manifest: CfManifest,
+        key: &str,
     ) -> Result<MrpackReport> {
-        let (index, overrides) = {
-            let (archive, scratch) = (archive.to_owned(), scratch.to_owned());
-            tokio::task::spawn_blocking(move || open_mrpack(&archive, &scratch))
-                .await
-                .map_err(|e| Error::Other(e.into()))??
+        let loader = manifest.loader();
+        let mismatch = manifest.minecraft.version != instance.minecraft_version
+            || loader.as_ref().map(|l| l.kind) != Some(instance.loader.kind);
+        let mut report = MrpackReport {
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            minecraft_version: Some(manifest.minecraft.version.clone()),
+            loader,
+            mismatch,
+            added: 0,
+            failed: Vec::new(),
         };
+
+        let mut files: Vec<CfFile> = Vec::new();
+        for batch in manifest.files.chunks(CURSEFORGE_BATCH) {
+            let ids: Vec<u64> = batch.iter().map(|f| f.file_id).collect();
+            let found: Vec<CfFile> = self
+                .curseforge_lookup("/mods/files", serde_json::json!({ "fileIds": ids }), key)
+                .await?;
+            files.extend(found);
+        }
+        let mut projects: HashMap<u64, CfMod> = HashMap::new();
+        let mut project_ids: Vec<u64> = manifest.files.iter().map(|f| f.project_id).collect();
+        project_ids.sort_unstable();
+        project_ids.dedup();
+        for batch in project_ids.chunks(CURSEFORGE_BATCH) {
+            let found: Vec<CfMod> = self
+                .curseforge_lookup("/mods", serde_json::json!({ "modIds": batch }), key)
+                .await?;
+            projects.extend(found.into_iter().map(|item| (item.id, item)));
+        }
+
+        struct Job {
+            path: String,
+            source: String,
+            checksum: Checksum,
+            hints: FileHints,
+        }
+        let mut jobs = Vec::new();
+        for listed in &manifest.files {
+            let project = projects.get(&listed.project_id);
+            let title = project.map_or_else(
+                || format!("project {}", listed.project_id),
+                |p| p.name.clone(),
+            );
+            let Some(file) = files.iter().find(|f| f.id == listed.file_id) else {
+                report.failed.push(MrpackFailure {
+                    path: title,
+                    error: format!(
+                        "file {} is no longer on CurseForge; pick another build of this mod",
+                        listed.file_id
+                    ),
+                });
+                continue;
+            };
+            let name = file
+                .file_name
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default();
+            let Some((folder, side)) = curseforge_folder(project.and_then(|p| p.class_id), name)
+            else {
+                report.failed.push(MrpackFailure {
+                    path: name.to_owned(),
+                    error: format!("{title} is neither a mod, a resource pack nor a shader pack"),
+                });
+                continue;
+            };
+            let path = match normalize_path(&format!("{folder}/{name}")) {
+                Ok(path) => path,
+                Err(err) => {
+                    report.failed.push(MrpackFailure {
+                        path: name.to_owned(),
+                        error: err.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let Some(source) = file.download_url.clone() else {
+                let page = project
+                    .and_then(|p| p.links.as_ref())
+                    .and_then(|l| l.website_url.as_deref())
+                    .filter(|u| u.starts_with("https://"))
+                    .map(|u| format!("{}/files/{}", u.trim_end_matches('/'), file.id))
+                    .unwrap_or_else(|| "CurseForge".to_owned());
+                report.failed.push(MrpackFailure {
+                    path,
+                    error: format!(
+                        "the author of {title} does not allow third-party downloads; \
+                         download the file from {page} in a browser and upload it"
+                    ),
+                });
+                continue;
+            };
+            if !curseforge_host(&source) {
+                report.failed.push(MrpackFailure {
+                    path,
+                    error: "unexpected download host".to_owned(),
+                });
+                continue;
+            }
+            jobs.push(Job {
+                path,
+                source,
+                checksum: curseforge_checksum(file),
+                hints: FileHints {
+                    side: side.or_else(|| curseforge_side(file)),
+                    optional: (!listed.required).then_some(true),
+                },
+            });
+        }
+
+        let downloads = futures_util::stream::iter(jobs.into_iter().map(|job| {
+            let (this, instance_id) = (self.clone(), instance.id.clone());
+            async move {
+                let outcome = this
+                    .ingest(
+                        &instance_id,
+                        &job.path,
+                        &job.source,
+                        job.checksum,
+                        job.hints,
+                    )
+                    .await;
+                (job.path, outcome)
+            }
+        }))
+        .buffer_unordered(6)
+        .collect::<Vec<_>>()
+        .await;
+        for (path, outcome) in downloads {
+            match outcome {
+                Ok(_) => report.added += 1,
+                Err(err) => report.failed.push(MrpackFailure {
+                    path,
+                    error: err.to_string(),
+                }),
+            }
+        }
+        Ok(report)
+    }
+
+    async fn import_mrpack_files(
+        &self,
+        instance: &Instance,
+        index: MrpackIndex,
+    ) -> Result<MrpackReport> {
         let minecraft_version = index.dependencies.get("minecraft").cloned();
         let loader = index.loader();
         let mismatch = minecraft_version.as_deref() != Some(instance.minecraft_version.as_str())
@@ -1029,6 +1513,16 @@ impl Sources {
             }
         }
 
+        Ok(report)
+    }
+
+    /// Adds the files the archive carries itself: configs, scripts, worlds.
+    async fn import_overrides(
+        &self,
+        instance: &Instance,
+        overrides: Vec<Override>,
+        report: &mut MrpackReport,
+    ) -> Result<()> {
         // In archive order, so the side-specific trees replace `overrides/`.
         for item in overrides {
             let hints = FileHints {
@@ -1048,8 +1542,7 @@ impl Sources {
                 }),
             }
         }
-        report.failed.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(report)
+        Ok(())
     }
 }
 
@@ -1136,7 +1629,7 @@ mod tests {
         }
         zip.finish().unwrap();
 
-        let report = sources.import_mrpack("main", &archive).await.unwrap();
+        let report = sources.import_pack("main", &archive, None).await.unwrap();
         assert_eq!(report.name, "Test");
         assert!(!report.mismatch);
         assert_eq!(report.added, 3);
@@ -1155,5 +1648,73 @@ mod tests {
         );
         // Scratch space is cleaned up.
         assert_eq!(fs_err::read_dir(tmp.path().join("tmp")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn curseforge_archive_is_recognised() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("pack.zip");
+        let mut zip = zip::ZipWriter::new(fs_err::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("manifest.json", options).unwrap();
+        zip.write_all(
+            br#"{"minecraft":{"version":"1.12.2",
+                  "modLoaders":[{"id":"forge-14.23.5.2860","primary":true}]},
+                "manifestType":"minecraftModpack","manifestVersion":1,
+                "name":"Reloaded","version":"1.9.0","author":"someone",
+                "files":[{"projectID":238222,"fileID":2803400,"required":true},
+                         {"projectID":32274,"fileID":2916002,"required":false},
+                         {"projectID":1,"fileID":2}],
+                "overrides":"overrides"}"#,
+        )
+        .unwrap();
+        for (name, body) in [
+            ("overrides/config/forge.cfg", "a"),
+            ("overrides/scripts/recipes.zs", "b"),
+            ("overrides/../escape.txt", "c"),
+            ("modlist.html", "d"),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let scratch = tmp.path().join("scratch");
+        fs_err::create_dir_all(&scratch).unwrap();
+        let (pack, overrides) = open_pack(&archive, &scratch).unwrap();
+        let PackArchive::Curseforge(manifest) = pack else {
+            panic!("expected a CurseForge pack");
+        };
+        assert_eq!(manifest.name, "Reloaded");
+        assert_eq!(manifest.minecraft.version, "1.12.2");
+        let loader = manifest.loader().unwrap();
+        assert_eq!(loader.kind, LoaderKind::Forge);
+        assert_eq!(loader.version, "14.23.5.2860");
+        let required: Vec<bool> = manifest.files.iter().map(|f| f.required).collect();
+        assert_eq!(required, vec![true, false, true]);
+        let mut paths: Vec<&str> = overrides.iter().map(|o| o.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, vec!["config/forge.cfg", "scripts/recipes.zs"]);
+
+        assert_eq!(curseforge_folder(Some(6), "a.jar"), Some(("mods", None)));
+        assert_eq!(
+            curseforge_folder(Some(12), "a.zip"),
+            Some(("resourcepacks", Some(Side::Client)))
+        );
+        assert_eq!(curseforge_folder(Some(17), "world.zip"), None);
+        assert_eq!(curseforge_folder(None, "a.jar"), Some(("mods", None)));
+    }
+
+    #[test]
+    fn an_ordinary_zip_is_not_a_modpack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("pack.zip");
+        let mut zip = zip::ZipWriter::new(fs_err::File::create(&archive).unwrap());
+        zip.start_file("readme.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"hello").unwrap();
+        zip.finish().unwrap();
+        let err = open_pack(&archive, tmp.path()).err().unwrap();
+        assert!(err.to_string().contains("manifest.json"), "{err}");
     }
 }
