@@ -11,6 +11,7 @@ pub mod api;
 pub mod assets;
 pub mod game;
 pub mod secrets;
+pub mod servers;
 pub mod store;
 pub mod sync;
 pub mod update;

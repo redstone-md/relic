@@ -208,6 +208,21 @@ async fn run(launch: Launch, events: &UnboundedSender<Event>) -> Result<(), Erro
             .unwrap_or(instance),
         Err(_) => instance,
     };
+    // The address also goes into the game's own server list, so the server
+    // is one click away when the game was started while it was down.
+    if join_target(&instance.address).is_some() {
+        let (dir, name, address) = (
+            game_dir.clone(),
+            instance.name.clone(),
+            instance.address.clone(),
+        );
+        let listed =
+            tokio::task::spawn_blocking(move || super::servers::remember(&dir, &name, &address))
+                .await;
+        if let Ok(Err(err)) = listed {
+            tracing::warn!(error = %err, "could not add the server to the game's list");
+        }
+    }
     let join = (instance.status == InstanceStatus::Running)
         .then(|| join_target(&instance.address))
         .flatten();
